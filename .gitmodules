@@ -1,0 +1,3 @@
+[submodule "vendor/enshrouded-ember"]
+	path = vendor/enshrouded-ember
+	url = https://github.com/zachthedev/enshrouded-ember.git

@@ -1,0 +1,16 @@
+[package]
+name = "mods-common"
+description = "Shared helpers for the mods in this repository: command parsing, sidecar schemas, admin resolution."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
