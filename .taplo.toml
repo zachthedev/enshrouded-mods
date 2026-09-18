@@ -1,0 +1,12 @@
+# Every TOML file this repository owns, formatted by `taplo fmt`. The gate runs
+# `taplo fmt --check`.
+
+include = ["**/*.toml"]
+
+# vendor/ is Ember's own checkout, formatted by Ember's own gate.
+exclude = ["vendor/**"]
+
+[formatting]
+# .editorconfig sets four spaces for every file type but markup, and `cargo add`
+# writes manifests the same way.
+indent_string = "    "

@@ -61,6 +61,18 @@ pub const STEPS: &[Step] = &[
         fallback: None,
     },
     Step {
+        name: "taplo",
+        primary: Run {
+            tool: "taplo-cli",
+            probe: Probe::Command(&["taplo", "--version"]),
+            // The files and the exclusions are in .taplo.toml, so the same set
+            // is formatted whether the gate or an editor runs the tool.
+            command: &["taplo", "fmt", "--check"],
+            install: "cargo install taplo-cli --locked",
+        },
+        fallback: None,
+    },
+    Step {
         name: "clippy",
         primary: Run {
             tool: "clippy",
@@ -92,6 +104,21 @@ pub const STEPS: &[Step] = &[
             command: &["cargo", "test", "--workspace"],
             install: "rustup toolchain install stable",
         }),
+    },
+    Step {
+        name: "doctests",
+        primary: Run {
+            tool: "cargo test",
+            probe: Probe::Command(&["cargo", "--version"]),
+            // cargo-nextest runs no doctests, so the tests step above leaves
+            // every documented example unbuilt. This step runs unconditionally,
+            // which costs a second run of them on the rare host where the tests
+            // step fell back to `cargo test`. What the gate covers then does not
+            // depend on which test runner is installed.
+            command: &["cargo", "test", "--workspace", "--doc"],
+            install: "rustup toolchain install stable",
+        },
+        fallback: None,
     },
     Step {
         name: "deny",
@@ -133,13 +160,16 @@ pub const STEPS: &[Step] = &[
             // npm when a package is absent locally, which bypasses the
             // lockfile, so the probe has to see the pinned copy itself.
             probe: Probe::File("node_modules/prettier/package.json"),
+            // A PostToolUse hook formats .js on every edit, so the glob covers
+            // every extension prettier owns here rather than the markup alone.
+            // .ts is in the list before the first one lands.
             command: &[
                 "bunx",
                 "--no-install",
                 "--bun",
                 "prettier",
                 "--check",
-                "**/*.{md,yml,yaml,json}",
+                "**/*.{md,yml,yaml,json,js,mjs,cjs,ts}",
             ],
             install: "bun install",
         },
@@ -458,8 +488,8 @@ mod tests {
         }
     }
 
-    /// The gate is format, lint, test, the three supply chain checks, then the
-    /// markup formatter.
+    /// The gate is the two source formatters, lint, the two test runs, the
+    /// three supply chain checks, then the markup formatter.
     #[test]
     fn steps_run_in_the_declared_order() {
         let runner = FakeRunner::all_installed();
@@ -469,22 +499,80 @@ mod tests {
         assert_eq!(
             names,
             [
-                "fmt", "clippy", "tests", "deny", "machete", "audit", "prettier"
+                "fmt", "taplo", "clippy", "tests", "doctests", "deny", "machete", "audit",
+                "prettier"
             ]
         );
         assert_eq!(
             runner.ran(),
             [
                 "cargo fmt --check",
+                "taplo fmt --check",
                 "cargo clippy --workspace --all-targets -- -D warnings",
                 "cargo nextest run --workspace",
+                "cargo test --workspace --doc",
                 "cargo deny check",
                 "cargo machete crates mods xtask",
                 "cargo audit",
-                "bunx --no-install --bun prettier --check **/*.{md,yml,yaml,json}",
+                "bunx --no-install --bun prettier --check **/*.{md,yml,yaml,json,js,mjs,cjs,ts}",
             ]
         );
         assert!(rows.iter().all(Row::passed));
+    }
+
+    /// `cargo nextest run` runs no doctests, so a doctest that stops compiling
+    /// passes a gate whose only test step is nextest.
+    #[test]
+    fn the_gate_runs_doctests_whichever_runner_ran_the_suite() {
+        let tests = &STEPS[3];
+        assert_eq!(tests.name, "tests");
+
+        for probe in [None, Some(tests.primary.probe)] {
+            let mut runner = FakeRunner::all_installed();
+            let mut note = "with cargo-nextest";
+            if let Some(probe) = probe {
+                runner = runner.without(probe);
+                note = "without cargo-nextest";
+            }
+            let (rows, _) = gate(&runner);
+
+            assert!(rows.iter().all(Row::passed), "{note}: a step did not pass");
+            assert!(
+                runner
+                    .ran()
+                    .contains(&"cargo test --workspace --doc".to_string()),
+                "{note}: the gate ran no doctests, got {:?}",
+                runner.ran()
+            );
+        }
+    }
+
+    /// A `PostToolUse` hook formats JavaScript on every edit. An extension
+    /// prettier owns and the gate does not check is a file whose formatting
+    /// nothing enforces.
+    #[test]
+    fn prettier_checks_every_extension_it_owns_here() {
+        let step = STEPS
+            .iter()
+            .find(|step| step.name == "prettier")
+            .expect("a prettier step");
+        let glob = step
+            .primary
+            .command
+            .last()
+            .expect("the prettier step names a glob");
+        let list = glob
+            .strip_prefix("**/*.{")
+            .and_then(|rest| rest.strip_suffix('}'))
+            .unwrap_or_else(|| panic!("{glob} is not a brace list of extensions"));
+        let covered: Vec<&str> = list.split(',').collect();
+
+        for extension in ["md", "yml", "yaml", "json", "js", "mjs", "cjs", "ts"] {
+            assert!(
+                covered.contains(&extension),
+                "the prettier glob skips .{extension}, got {glob}"
+            );
+        }
     }
 
     /// A failing step is the last one to run, whichever step it is.
@@ -547,7 +635,8 @@ mod tests {
     /// runner ran.
     #[test]
     fn tests_fall_back_to_cargo_test_when_nextest_is_absent() {
-        let step = &STEPS[2];
+        let step = &STEPS[3];
+        assert_eq!(step.name, "tests");
         let runner = FakeRunner::all_installed().without(step.primary.probe);
         let (rows, text) = gate(&runner);
 
@@ -611,8 +700,8 @@ mod tests {
         let runner = FakeRunner::all_installed();
         let (rows, _) = gate(&runner);
 
-        assert!(!rows[2].fell_back);
-        assert_eq!(rows[2].tool, "cargo-nextest");
+        assert!(!rows[3].fell_back);
+        assert_eq!(rows[3].tool, "cargo-nextest");
     }
 
     /// A row's glyph separates a failure from a tool that never ran.

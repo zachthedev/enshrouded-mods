@@ -29,9 +29,9 @@ repository's own `.cargo/config.toml` stays untouched.
 cargo command. A C toolchain is needed for the hook engine Ember uses; on
 Windows that is Visual Studio Build Tools.
 
-The gate calls four cargo subcommands rustup does not ship.
-`.github/cargo-tools` pins their versions and is the only place those numbers
-live, so this installs what continuous integration installs:
+The gate calls five tools rustup does not ship. `.github/cargo-tools` pins their
+versions and is the only place those numbers live, so this installs what
+continuous integration installs:
 
 ```powershell
 cargo install --locked @(Get-Content .github/cargo-tools | Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() })
@@ -106,17 +106,26 @@ The loop is fetch, extract, check.
 cargo xtask check
 ```
 
-Seven steps, in order, stopping at the first failure:
+Nine steps, in order, stopping at the first failure:
 
 ```text
 fmt       cargo fmt --check
+taplo     taplo fmt --check
 clippy    cargo clippy --workspace --all-targets -- -D warnings
 tests     cargo nextest run --workspace
+doctests  cargo test --workspace --doc
 deny      cargo deny check
-machete   cargo machete
+machete   cargo machete crates mods xtask
 audit     cargo audit
-prettier  bunx --no-install --bun prettier --check over markdown, YAML and JSON
+prettier  bunx --no-install --bun prettier --check
 ```
+
+`taplo` reads `.taplo.toml` for the files it covers and the one directory it
+leaves alone, which is Ember's checkout under `vendor/`. `prettier` covers
+`.md`, `.yml`, `.yaml`, `.json`, `.js`, `.mjs`, `.cjs` and `.ts`.
+
+`doctests` runs whether or not `cargo-nextest` is installed, because
+`cargo nextest` runs none of them.
 
 `tests` falls back to `cargo test --workspace` when `cargo-nextest` is absent,
 and the summary says which one ran. Any other missing tool stops the gate and

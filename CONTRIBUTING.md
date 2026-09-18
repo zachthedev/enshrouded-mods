@@ -15,9 +15,9 @@ An existing clone catches up with `git submodule update --init`.
 `rust-toolchain.toml` pins Rust 1.98.1. A C toolchain is needed for the hook
 engine Ember uses. [Bun](https://bun.sh) runs the repository's own tooling.
 
-The gate calls four cargo subcommands that rustup does not install.
-`.github/cargo-tools` pins their versions and is the only place those numbers
-live, so this installs what continuous integration installs:
+The gate calls five tools that rustup does not install. `.github/cargo-tools`
+pins their versions and is the only place those numbers live, so this installs
+what continuous integration installs:
 
 ```powershell
 cargo install --locked @(Get-Content .github/cargo-tools | Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() })
@@ -39,15 +39,25 @@ cargo xtask check
 
 It runs, in order and stopping at the first failure:
 
-| Step       | Command                                                              |
-| ---------- | -------------------------------------------------------------------- |
-| `fmt`      | `cargo fmt --check`                                                  |
-| `clippy`   | `cargo clippy --workspace --all-targets -- -D warnings`              |
-| `tests`    | `cargo nextest run --workspace`                                      |
-| `deny`     | `cargo deny check`                                                   |
-| `machete`  | `cargo machete`                                                      |
-| `audit`    | `cargo audit`                                                        |
-| `prettier` | `bunx --no-install --bun prettier --check` over markdown, YAML, JSON |
+| Step       | Command                                                 |
+| ---------- | ------------------------------------------------------- |
+| `fmt`      | `cargo fmt --check`                                     |
+| `taplo`    | `taplo fmt --check`                                     |
+| `clippy`   | `cargo clippy --workspace --all-targets -- -D warnings` |
+| `tests`    | `cargo nextest run --workspace`                         |
+| `doctests` | `cargo test --workspace --doc`                          |
+| `deny`     | `cargo deny check`                                      |
+| `machete`  | `cargo machete crates mods xtask`                       |
+| `audit`    | `cargo audit`                                           |
+| `prettier` | `bunx --no-install --bun prettier --check`              |
+
+`taplo` reads `.taplo.toml` for the files it covers and the one directory it
+leaves alone, which is Ember's checkout under `vendor/`. `prettier` covers
+`.md`, `.yml`, `.yaml`, `.json`, `.js`, `.mjs`, `.cjs` and `.ts`.
+
+`doctests` runs whether or not `cargo-nextest` is installed, because
+`cargo nextest` runs none of them and a doctest that stops compiling would
+otherwise pass the gate in silence.
 
 `tests` falls back to `cargo test --workspace` when `cargo-nextest` is absent,
 and the summary says which runner ran. Any other missing tool stops the gate and
