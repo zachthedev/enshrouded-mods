@@ -1,0 +1,67 @@
+version: 2
+
+# Stable cargo has no publish-age gate of its own, so the cooldown below is the
+# only thing between this repository and a version published minutes ago.
+#
+# Patch and minor updates arrive grouped, one pull request per ecosystem per
+# week, so the gate runs once per group. A major arrives on its own, because it
+# is a decision rather than a bump.
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: ["patch", "minor"]
+    labels: ["dependencies", "cargo"]
+    open-pull-requests-limit: 4
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["patch", "minor"]
+    labels: ["dependencies", "ci"]
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
+
+  - package-ecosystem: bun
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      bun:
+        patterns: ["*"]
+        update-types: ["patch", "minor"]
+    labels: ["dependencies", "bun"]
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Ember, vendored at vendor/enshrouded-ember. Never grouped: this pin is the
+  # SDK the mods here compile against, so moving it changes what the mod does,
+  # and it is read on its own.
+  - package-ecosystem: gitsubmodule
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    labels: ["dependencies", "ember"]
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "chore(deps)"

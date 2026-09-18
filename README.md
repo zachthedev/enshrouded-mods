@@ -5,14 +5,18 @@ Server-side mods for Enshrouded dedicated servers, built on
 
 Nothing here is affiliated with or endorsed by Keen Games.
 
+This repository is in development. No release is published yet.
+
 ## private-chests
 
 Every magic chest inside a base feeds every player's crafting from one shared
-pool. This mod gives each container an owner and a scope, so a crafting pull
-draws only from containers the crafting player can reach.
+pool. This mod gives each container and each crafting station an owner and a
+scope, so a craft draws only from containers the crafter can reach.
 
-- **Automatic.** A container is private to whoever placed it, or to that
-  player's team. Nobody has to type anything.
+### What a player sees
+
+- **Automatic.** A container or station is private to whoever placed it, or to
+  that player's team. Nobody has to type anything.
 - **Teams.** Leaderless: any member invites, the invitee accepts, leaving is
   free, active members cannot be removed, and removing an inactive member takes
   unanimous agreement from the rest.
@@ -20,11 +24,33 @@ draws only from containers the crafting player can reach.
   pool.
 - **Several characters.** Items follow the character; teams and settings follow
   the account, so every character of one account shares them.
-- **Server side only.** No client install, no launcher, no web panel. Players
-  see heads-up notifications and a handful of chat verbs.
+- **Server side only.** No client install, no launcher, no web panel.
 
-Crafting scope is the only behavior on by default. Restricting who can open a
-container and who can quick-stack into one are separate settings, both off.
+### What an admin gets
+
+- Three scopes: Private, Team and Public. A station spends only from its own
+  scope, so a Public station spends communal stock and a Private one spends its
+  owner's.
+- Three behaviors, each its own setting. Crafting scope is on. Restricting who
+  can open a container and who can quick-stack into one are off.
+- Nothing changes on an existing world until players set a scope. A container
+  with no record follows the `unowned` setting, which allows by default.
+- Admins are a user group from `enshrouded_server.json`, plus an account list.
+  The mod never writes that file.
+
+Everything a player sees arrives as a chat line, because chat is the only text
+channel a dedicated server can drive. Dedicated servers ship with text chat off,
+so `enableTextChat` has to be true in `enshrouded_server.json` for any of it to
+reach a player. With it off the mod still enforces scope; it just says nothing.
+
+## Documentation
+
+| File                               | For                                        |
+| ---------------------------------- | ------------------------------------------ |
+| [docs/install.md](docs/install.md) | Server admins installing the mod           |
+| [docs/admin.md](docs/admin.md)     | The mod's settings and the chat verbs      |
+| [docs/dev.md](docs/dev.md)         | The first development run, end to end      |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | The gate, the commit convention, the hooks |
 
 ## Layout
 
@@ -32,7 +58,7 @@ container and who can quick-stack into one are separate settings, both off.
 | --------------------- | -------------------------------------------------- |
 | `mods/private-chests` | The mod                                            |
 | `crates/mods-common`  | Helpers the mods here share                        |
-| `xtask`               | Development server, fixtures, packaging            |
+| `xtask`               | The gate, the hooks, the development server        |
 | `fixtures`            | Worlds and configuration a test server starts from |
 | `vendor`              | Ember, as a submodule, for local development       |
 

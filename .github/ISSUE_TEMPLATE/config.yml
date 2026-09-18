@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Ember, the SDK these mods load through
+    url: https://github.com/zachthedev/enshrouded-ember/issues
+    about: >
+      A symbol that failed to resolve, a loader startup report, or anything
+      about how a mod reaches the server.

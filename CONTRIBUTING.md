@@ -13,29 +13,75 @@ An existing clone catches up with `git submodule update --init`.
 ## Toolchain
 
 `rust-toolchain.toml` pins Rust 1.98.1. A C toolchain is needed for the hook
-engine Ember uses.
+engine Ember uses. [Bun](https://bun.sh) runs the repository's own tooling.
+
+The gate calls four cargo subcommands that rustup does not install.
+`.github/cargo-tools` pins their versions and is the only place those numbers
+live, so this installs what continuous integration installs:
+
+```powershell
+cargo install --locked @(Get-Content .github/cargo-tools | Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() })
+```
+
+On a shell without PowerShell:
+
+```sh
+cargo install --locked $(grep -v '^#' .github/cargo-tools | grep .)
+```
 
 ## The gate
 
-Every one of these must pass before a commit is pushed:
+One command, and the only one:
 
 ```sh
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo xtask check
 ```
+
+It runs, in order and stopping at the first failure:
+
+| Step       | Command                                                              |
+| ---------- | -------------------------------------------------------------------- |
+| `fmt`      | `cargo fmt --check`                                                  |
+| `clippy`   | `cargo clippy --workspace --all-targets -- -D warnings`              |
+| `tests`    | `cargo nextest run --workspace`                                      |
+| `deny`     | `cargo deny check`                                                   |
+| `machete`  | `cargo machete`                                                      |
+| `audit`    | `cargo audit`                                                        |
+| `prettier` | `bunx --no-install --bun prettier --check` over markdown, YAML, JSON |
+
+`tests` falls back to `cargo test --workspace` when `cargo-nextest` is absent,
+and the summary says which runner ran. Any other missing tool stops the gate and
+names itself, because a check that did not run is not a check that passed.
+
+The pre-push hook and continuous integration call the same command, so the three
+cannot drift apart.
+
+## Hooks
+
+Two hooks live in `.githooks`: `commit-msg` runs commitlint, and `pre-push` runs
+the gate. Install them once per clone:
+
+```sh
+bun install
+```
+
+Without Bun:
+
+```sh
+cargo xtask hooks install
+```
+
+Either one points `core.hooksPath` at `.githooks`.
 
 ## Commit messages
 
-Conventional Commits, enforced by a `commit-msg` hook running commitlint.
-Install the hook once per clone with `bun install`.
-
-## Scopes
+[Conventional Commits](https://www.conventionalcommits.org), enforced by the
+`commit-msg` hook. Run `cargo xtask scopes` for the live scope list, which is
+the same list `commitlint.config.js` enforces:
 
 `private-chests`, `common`, `xtask`, `fixtures`, `deps`, `ci`, `release`.
 
-A new mod earns a scope. Omit the scope rather than invent one. Run
-`cargo xtask scopes` for the live list.
+A new mod earns a scope. Omit the scope rather than invent one.
 
 ## Where code goes
 
@@ -45,8 +91,20 @@ Ask what the code describes:
 - Something every mod here shares: `crates/mods-common`
 - One mod's own idea: that mod
 
-## Testing against a server
+## The first run
 
-`cargo xtask` fetches a dedicated server into `.local/`, seeds a fixture world
-and launches it with the mod loaded. It never touches an installed copy of the
-game, and any command given a path inside a Steam library refuses it.
+[docs/dev.md](docs/dev.md) has it end to end. In short: fetch a dedicated server
+into `.cache`, extract the schema from it, then run the gate. The extract step
+is required, because nothing recovered from a Keen binary is committed to this
+repository.
+
+`cargo xtask server ...` and `cargo xtask schema ...` forward to Ember's xtask
+through the submodule, with `--root` set to this repository, so everything they
+write stays under `.cache`.
+
+## What never happens
+
+- No path inside a Steam library is ever written to, launched, or injected into.
+  A dedicated server for development is fetched separately into `.cache`.
+- No schema dump, string table or other recovered game data is committed. The
+  extractors are committed; their output is not.
