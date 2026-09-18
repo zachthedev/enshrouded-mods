@@ -79,6 +79,139 @@ fn workspace_inherited(value: &toml::Value, found: &mut BTreeSet<String>) {
     }
 }
 
+/// Every string literal in a JavaScript source, paired with the bracket depth
+/// it sits at, in source order.
+///
+/// Characters inside a literal open no bracket and comments are skipped, so a
+/// URL, an apostrophe in a sentence and a commented-out list all read
+/// correctly.
+fn js_string_literals(source: &str) -> Vec<(usize, String)> {
+    let chars: Vec<char> = source.chars().collect();
+    let mut found: Vec<(usize, String)> = Vec::new();
+    let mut depth: usize = 0;
+    let mut index = 0;
+    while index < chars.len() {
+        match chars[index] {
+            '/' if chars.get(index + 1) == Some(&'/') => {
+                while index < chars.len() && chars[index] != '\n' {
+                    index += 1;
+                }
+            }
+            '/' if chars.get(index + 1) == Some(&'*') => {
+                index += 2;
+                while index < chars.len()
+                    && !(chars[index] == '*' && chars.get(index + 1) == Some(&'/'))
+                {
+                    index += 1;
+                }
+                index += 2;
+            }
+            '[' => {
+                depth += 1;
+                index += 1;
+            }
+            ']' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            quote @ ('\'' | '"' | '`') => {
+                index += 1;
+                let mut text = String::new();
+                while index < chars.len() && chars[index] != quote {
+                    if chars[index] == '\\' {
+                        index += 1;
+                        if index >= chars.len() {
+                            break;
+                        }
+                    }
+                    text.push(chars[index]);
+                    index += 1;
+                }
+                index += 1;
+                found.push((depth, text));
+            }
+            _ => index += 1,
+        }
+    }
+    found
+}
+
+/// The scope list `commitlint.config.js` enforces.
+///
+/// The `scope-enum` rule is `[level, applicability, [scopes]]`, so the scopes
+/// are the run of literals two brackets deeper than the rule's own name. An
+/// empty result means the file declares no such rule.
+fn commitlint_scopes(source: &str) -> Vec<String> {
+    let literals = js_string_literals(source);
+    let Some(rule) = literals.iter().position(|(_, text)| text == "scope-enum") else {
+        return Vec::new();
+    };
+    let wanted = literals[rule].0 + 2;
+    literals[rule + 1..]
+        .iter()
+        .skip_while(|(depth, _)| *depth != wanted)
+        .take_while(|(depth, _)| *depth == wanted)
+        .map(|(_, text)| text.clone())
+        .collect()
+}
+
+/// One `##` section of a markdown document, its heading excluded.
+///
+/// A heading is a stabler anchor than the sentence under it, so a section can
+/// be reworded without moving what reads it.
+fn section<'a>(markdown: &'a str, heading: &str) -> Option<&'a str> {
+    let opening = format!("\n## {heading}\n");
+    let start = markdown.find(&opening)? + opening.len();
+    let rest = &markdown[start..];
+    Some(rest.find("\n## ").map_or(rest, |end| &rest[..end]))
+}
+
+/// Every inline code span in a markdown fragment.
+fn code_spans(text: &str) -> Vec<String> {
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every paragraph of a markdown document that is a bare list of inline code
+/// spans, as the spans it holds.
+///
+/// Anchoring on the paragraph's shape rather than on the sentence above it
+/// means rewording the section around it leaves the check working.
+fn code_span_lists(markdown: &str) -> Vec<Vec<String>> {
+    markdown
+        .split("\n\n")
+        .filter_map(|paragraph| {
+            let spans = code_spans(paragraph);
+            if spans.is_empty() {
+                return None;
+            }
+            let mut rest = paragraph.to_string();
+            for span in &spans {
+                rest = rest.replacen(&format!("`{span}`"), "", 1);
+            }
+            rest.chars()
+                .all(|c| c == ',' || c == '.' || c.is_whitespace())
+                .then_some(spans)
+        })
+        .collect()
+}
+
+/// The package an install command names, for a command that is a
+/// `cargo install`.
+///
+/// The flag and the package can come in either order, so the package is the
+/// first word past `cargo install` that is not a flag.
+fn cargo_install_package(install: &str) -> Option<&str> {
+    let mut words = install.split_whitespace();
+    if words.next()? != "cargo" || words.next()? != "install" {
+        return None;
+    }
+    words.find(|word| !word.starts_with('-'))
+}
+
 /// Report whether `source` uses `identifier` as a whole word outside comments.
 fn mentions(source: &str, identifier: &str) -> bool {
     let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
@@ -99,7 +232,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        is_commit_hash, mentions, repo_root, rust_sources, workflow_uses, workspace_inherited,
+        cargo_install_package, code_span_lists, commitlint_scopes, is_commit_hash, mentions,
+        repo_root, rust_sources, section, workflow_uses, workspace_inherited,
     };
 
     fn read(relative: &str) -> String {
@@ -153,32 +287,66 @@ mod tests {
         );
     }
 
-    /// Every cargo tool the gate runs carries a version, in one file. A second
-    /// copy of a version is a copy that drifts.
+    /// Every tool the gate installs with `cargo install` carries a version, in
+    /// one file. A second copy of a version is a copy that drifts.
+    ///
+    /// The check runs both ways. A step whose tool is unpinned installs
+    /// whatever the registry serves today, and a pinned entry no step installs
+    /// is a version continuous integration fetches for nothing.
     #[test]
-    fn the_pinned_tool_file_covers_every_cargo_tool_the_gate_runs() {
+    fn the_pinned_tool_file_and_the_gate_name_the_same_tools() {
         let pinned: Vec<(String, String)> = pinned_tools();
         assert!(!pinned.is_empty(), "the pinned tool file names nothing");
 
+        let mut installed: BTreeSet<String> = BTreeSet::new();
         for step in crate::check::STEPS {
             for run in std::iter::once(&step.primary).chain(step.fallback.as_ref()) {
-                let Some(subcommand) = run.command.split_first().and_then(|(program, args)| {
-                    (*program == "cargo")
-                        .then(|| args.first().copied())
-                        .flatten()
-                }) else {
+                let Some(package) = cargo_install_package(run.install) else {
                     continue;
                 };
-                let tool = format!("cargo-{subcommand}");
-                if run.tool != tool {
-                    continue;
-                }
-                let found = pinned.iter().filter(|(name, _)| *name == tool).count();
+                assert_eq!(
+                    package, run.tool,
+                    "the {} step names {} and installs {package}",
+                    step.name, run.tool
+                );
+                let found = pinned.iter().filter(|(name, _)| name == package).count();
                 assert_eq!(
                     found, 1,
-                    "{tool} appears {found} times in .github/cargo-tools"
+                    "{package} appears {found} times in .github/cargo-tools"
                 );
+                installed.insert(package.to_string());
             }
+        }
+
+        let unused: Vec<&String> = pinned
+            .iter()
+            .map(|(name, _)| name)
+            .filter(|name| !installed.contains(*name))
+            .collect();
+        assert!(
+            unused.is_empty(),
+            "no gate step installs {unused:?} from .github/cargo-tools"
+        );
+    }
+
+    /// The flag and the package name come in either order, and a step that
+    /// installs through rustup or bun names no package at all.
+    #[test]
+    fn cargo_install_package_reads_either_argument_order() {
+        let cases = [
+            ("cargo install cargo-deny --locked", Some("cargo-deny")),
+            ("cargo install --locked cargo-deny", Some("cargo-deny")),
+            ("cargo install taplo-cli --locked", Some("taplo-cli")),
+            ("rustup component add rustfmt", None),
+            ("rustup toolchain install stable", None),
+            ("bun install", None),
+            ("cargo install", None),
+            ("cargo install --locked", None),
+            ("", None),
+        ];
+
+        for (install, expected) in cases {
+            assert_eq!(cargo_install_package(install), expected, "{install:?}");
         }
     }
 
@@ -215,6 +383,149 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The commit scope vocabulary lives in three places: the constant
+    /// `cargo xtask scopes` prints, the rule the commit hook enforces, and the
+    /// sentence `CONTRIBUTING.md` restates. A contributor who reads one and a
+    /// hook that enforces another disagree silently.
+    #[test]
+    fn every_copy_of_the_scope_list_agrees() {
+        let declared: Vec<String> = crate::SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect();
+        assert!(!declared.is_empty(), "xtask/src/main.rs declares no scopes");
+
+        let commitlint = commitlint_scopes(&read("commitlint.config.js"));
+        let contributing = read("CONTRIBUTING.md");
+        let commits = section(&contributing, "Commit messages")
+            .expect("CONTRIBUTING.md has a Commit messages section");
+        let documented = code_span_lists(commits);
+        assert_eq!(
+            documented.len(),
+            1,
+            "the Commit messages section holds {} paragraphs that are a bare list of code spans, so which one restates the scopes is ambiguous",
+            documented.len()
+        );
+
+        let mut disagree: Vec<String> = Vec::new();
+        if commitlint != declared {
+            disagree.push(format!(
+                "commitlint.config.js scope-enum has {commitlint:?}"
+            ));
+        }
+        if documented[0] != declared {
+            disagree.push(format!("CONTRIBUTING.md restates {:?}", documented[0]));
+        }
+        assert!(
+            disagree.is_empty(),
+            "xtask/src/main.rs SCOPES has {declared:?}, and {}",
+            disagree.join("; ")
+        );
+    }
+
+    /// The parser reads the rule's nested array and leaves every other literal
+    /// in the file alone, including one inside a comment and one holding a
+    /// bracket.
+    #[test]
+    fn commitlint_scopes_reads_the_nested_rule_array() {
+        let cases = [
+            (
+                "\
+export default {
+  extends: ['@commitlint/config-conventional'],
+  ignores: [(message) => message.includes('Signed-off-by: dependabot[bot]')],
+  rules: {
+    'scope-enum': [2, 'always', ['one', 'two']],
+    'body-max-line-length': [2, 'always', 72],
+  },
+};
+",
+                vec!["one", "two"],
+            ),
+            (
+                "\
+export default {
+  rules: {
+    'scope-enum': [
+      2,
+      'always',
+      // A list at https://example.invalid that isn't the rule's own.
+      /* 'commented' */
+      ['one', 'two', 'three'],
+    ],
+  },
+};
+",
+                vec!["one", "two", "three"],
+            ),
+            ("export default { rules: {} };", vec![]),
+        ];
+
+        for (source, expected) in cases {
+            assert_eq!(commitlint_scopes(source), expected, "{source}");
+        }
+    }
+
+    /// A paragraph of prose holding code spans is not a list, and a bullet is
+    /// not a bare paragraph.
+    #[test]
+    fn code_span_lists_matches_only_a_bare_list() {
+        let markdown = "\
+# Title
+
+Run `cargo xtask scopes` for the live list.
+
+`one`, `two`, `three`.
+
+- `four`, `five`
+";
+        assert_eq!(code_span_lists(markdown), [["one", "two", "three"]]);
+    }
+
+    /// A section runs to the next heading of its own level, and a heading that
+    /// is not there yields nothing rather than the rest of the file.
+    #[test]
+    fn section_spans_one_heading_to_the_next() {
+        let markdown = "\
+# Title
+
+## First
+
+one
+
+## Second
+
+two
+
+## Third
+
+three
+";
+        assert_eq!(section(markdown, "First"), Some("\none\n"));
+        assert_eq!(section(markdown, "Third"), Some("\nthree\n"));
+        assert_eq!(section(markdown, "Fourth"), None);
+    }
+
+    /// Ember's checkout under `vendor/` is formatted by Ember's own gate, so
+    /// the TOML formatter here never rewrites a file this repository does not
+    /// own.
+    #[test]
+    fn the_toml_formatter_never_reaches_the_vendored_checkout() {
+        let config: toml::Value = toml::from_str(&read(".taplo.toml")).expect(".taplo.toml parses");
+        let exclude: Vec<&str> = config
+            .get("exclude")
+            .and_then(toml::Value::as_array)
+            .expect(".taplo.toml declares an exclude list")
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect();
+
+        assert!(
+            exclude.iter().any(|pattern| pattern.starts_with("vendor/")),
+            "no exclude pattern covers vendor/, got {exclude:?}"
+        );
     }
 
     /// The workspace members, as paths relative to the repository root.
