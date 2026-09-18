@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/mods-common", "mods/private-chests", "xtask"]
+# vendor/enshrouded-ember is its own workspace; the outer one must not claim it.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.0.0"
@@ -14,20 +16,19 @@ authors = ["Zach <me@zachthe.dev>"]
 mods-common = { version = "0.0.0", path = "crates/mods-common" }
 
 # Ember is a separate repository. Releases pin published versions; local work
-# builds against the submodule in vendor/, which is where these paths point.
-ember-enshrouded = { path = "vendor/enshrouded-ember/crates/ember-enshrouded" }
-ember-holistic = { path = "vendor/enshrouded-ember/crates/ember-holistic" }
-ember-sdk = { path = "vendor/enshrouded-ember/crates/ember-sdk" }
+# builds against the submodule in vendor/, which is where this path points. A
+# mod that reaches the engine or the game layer adds that crate here beside it.
+ember-sdk = { version = "0.0.0", path = "vendor/enshrouded-ember/crates/ember-sdk" }
 
 # Versions resolved against crates.io on 2026-09-17.
+anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
+owo-colors = { version = "4.4.0", features = ["supports-colors"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
+toml = "1.1.6"
 tracing = "0.1.44"
-
-insta = "1.48.0"
-rstest = "0.27.0"
 
 [workspace.lints.rust]
 missing_docs = "warn"

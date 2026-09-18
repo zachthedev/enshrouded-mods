@@ -7,6 +7,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+# Mods ship as libraries on a GitHub Release, never through crates.io.
+publish = false
 
 [dependencies]
 serde.workspace = true
@@ -14,3 +16,8 @@ thiserror.workspace = true
 
 [lints]
 workspace = true
+
+# The crate is a skeleton, so each dependency is declared before the module that
+# uses it. A name leaves this list when that module lands.
+[package.metadata.cargo-machete]
+ignored = ["serde", "thiserror"]

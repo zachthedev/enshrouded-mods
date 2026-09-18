@@ -19,5 +19,7 @@
 //! free, active members cannot be removed, and removing an inactive member or
 //! renaming the team takes unanimous confirmation from the others.
 //!
-//! Server side only. Players get heads-up notifications and a small set of chat
-//! verbs; there is no client install and no web panel.
+//! Server side only: no client install, no web panel. Chat is the only text
+//! channel a dedicated server can drive, so every message to a player is a chat
+//! line. Dedicated servers ship with text chat off, and with it off the mod
+//! enforces scope silently.
