@@ -28,11 +28,10 @@ scope, so a craft draws only from containers the crafter can reach.
 
 ### What an admin gets
 
-- Three scopes: Private, Team and Public. A station spends only from its own
-  scope, so a Public station spends communal stock and a Private one spends its
-  owner's.
-- Three behaviors, each its own setting. Crafting scope is on. Restricting who
-  can open a container and who can quick-stack into one are off.
+- Private, Team and Public scopes. A station spends only from its own scope, so
+  a Public station spends communal stock and a Private one spends its owner's.
+- Each behavior is its own setting. Crafting scope is on. Restricting who can
+  open a container and who can quick-stack into one are off.
 - Nothing changes on an existing world until players set a scope. A container
   with no record follows the `unowned` setting, which allows by default.
 - Admins are a user group from `enshrouded_server.json`, plus an account list.

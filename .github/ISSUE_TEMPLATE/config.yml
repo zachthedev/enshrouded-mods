@@ -1,7 +1,7 @@
-# One form covers the report that has a shape, and every other kind of
+# The forms cover the reports that have a shape, and every other kind of
 # conversation has a link here. An issue here is therefore always a defect,
 # which is what keeps the tracker readable. A report with no build id and no log
-# cannot be acted on, which is what the form asks for.
+# cannot be acted on, which is what the bug form asks for.
 blank_issues_enabled: false
 contact_links:
   - name: A question, or help getting the mod running
