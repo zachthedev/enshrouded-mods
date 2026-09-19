@@ -20,4 +20,7 @@ workspace = true
 # The crate is a skeleton, so each dependency is declared before the module that
 # uses it. A name leaves this list when that module lands.
 [package.metadata.cargo-machete]
-ignored = ["serde", "thiserror"]
+ignored = [
+    "serde",
+    "thiserror",
+]
