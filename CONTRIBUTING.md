@@ -67,6 +67,9 @@ names itself, because a check that did not run is not a check that passed.
 The pre-push hook and continuous integration call the same command, so the three
 cannot drift apart.
 
+Continuous integration runs the same gate on Windows and on Linux, because the
+pre-push hook runs it on whichever host a contributor uses.
+
 ## Hooks
 
 Two hooks live in `.githooks`: `commit-msg` runs commitlint, and `pre-push` runs
