@@ -1,7 +1,24 @@
-blank_issues_enabled: true
+# One form covers the report that has a shape, and every other kind of
+# conversation has a link here. An issue here is therefore always a defect,
+# which is what keeps the tracker readable. A report with no build id and no log
+# cannot be acted on, which is what the form asks for.
+blank_issues_enabled: false
 contact_links:
-  - name: Ember, the SDK these mods load through
-    url: https://github.com/zachthedev/enshrouded-ember/issues
+  - name: A question, or help getting the mod running
+    url: https://github.com/zachthedev/enshrouded-mods/discussions/categories/q-a
     about: >
-      A symbol that failed to resolve, a loader startup report, or anything
-      about how a mod reaches the server.
+      Installing, a setting that does not do what you expected, how something is
+      meant to work, or anything the links below do not cover.
+  - name: An idea for a mod
+    url: https://github.com/zachthedev/enshrouded-mods/discussions/categories/ideas
+    about: Propose it here first. It becomes an issue once the shape is settled.
+  - name: Ember, the loader these mods run on
+    url: https://github.com/zachthedev/enshrouded-ember/issues/new/choose
+    about: >
+      A symbol that failed to resolve, a server build Ember does not recognize,
+      or no mod loading at all.
+  - name: A security problem
+    url: https://github.com/zachthedev/enshrouded-mods/blob/main/SECURITY.md
+    about: >
+      Anything that lets a player reach what their scope does not allow. Report
+      it privately. An issue is public the moment it is opened.

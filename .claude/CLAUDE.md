@@ -13,8 +13,8 @@ before changing anything.
 - **Never write to, launch, or inject into a Steam library path.** A dedicated
   server for development is fetched separately into `.cache`.
 - **Nothing recovered from a Keen binary is committed.** No schema dump, no
-  string table, no game data. The extractors are committed; their output lives
-  under `.cache` and is regenerated.
+  string table, no protocol registry, no game data. The extractors are
+  committed; their output lives under `.cache` and is regenerated.
 - **Commit scopes come from `cargo xtask scopes`.** That list and
   `commitlint.config.js` are the same list. Omit the scope rather than invent
   one.
@@ -38,3 +38,4 @@ goes in that mod.
 | [docs/dev.md](../docs/dev.md)         | The first run, end to end                  |
 | [docs/install.md](../docs/install.md) | Installing on a dedicated server           |
 | [docs/admin.md](../docs/admin.md)     | The mod's settings and the chat verbs      |
+| [README.md](../README.md)             | What the mods here do                      |

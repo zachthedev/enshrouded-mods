@@ -1,0 +1,127 @@
+name: Bug
+description: A mod here did something other than what the documentation says.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ember writes a startup report into `ember/logs` every time the server
+        starts. Most of the fields below are answered from it.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - What a craft draws from
+        - Who can open a container
+        - Where a quick stack deposits
+        - The scope on a container or a station
+        - Teams
+        - The chat verbs
+        - Starting the server, or no mod loading
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What the mod did, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      description: >
+        In order, from a running server. Name the container, the station and the
+        scope each one carries.
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Steam build id
+      description: >
+        The `buildid` line in `steamapps/appmanifest_2278520.acf` beside your
+        server. A finding is worthless without the build behind it.
+      placeholder: "23178631"
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: >
+        The number in the first 512 bytes of `enshrouded_server.kfc`, beside the
+        branch path and the build date. The server prints it at startup as `Game
+        Version (SVN)`.
+      placeholder: "1024233"
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Ember and mod versions
+      description: The startup report names both.
+      placeholder: "ember 0.1.0, private-chests 0.1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: mods
+    attributes:
+      label: Mods loaded, in load order
+      description: >
+        In the order the startup report lists them. Hooks chain in load order
+        and several mods may hook one target, so the order is part of the
+        report.
+      placeholder: |
+        private-chests
+        nothing else
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: The Ember log
+      description: >
+        From `ember/logs`, covering the start and the moment it went wrong. It
+        names every symbol that did not resolve on your build.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Your config.json
+      description: >
+        From `ember/mods/private-chests/config.json`. Every behavior is a
+        separate setting, so this file decides what should have happened.
+      render: json
+    validations:
+      required: true
+  - type: dropdown
+    id: clean
+    attributes:
+      label: Does it still happen with only Ember and this mod loaded?
+      description: >
+        Take out every other mod and delete the mod's `config.json`, which is
+        written back from the defaults. From a checkout, `cargo xtask server
+        seed` then `cargo xtask server run` gives you the same server.
+      options:
+        - "Yes"
+        - "No, it stops"
+        - Not checked
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Host
+      options:
+        - Windows
+        - Wine
+        - Proton
+    validations:
+      required: true
