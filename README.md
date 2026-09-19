@@ -30,10 +30,8 @@ scope, so a craft draws only from containers the crafter can reach.
 
 - Private, Team and Public scopes. A station spends only from its own scope, so
   a Public station spends communal stock and a Private one spends its owner's.
-- Each behavior is its own setting. Crafting scope is on. Restricting who can
-  open a container and who can quick-stack into one are off.
-- Nothing changes on an existing world until players set a scope. A container
-  with no record follows the `unowned` setting, which allows by default.
+- Each behavior is its own setting, and [docs/admin.md](docs/admin.md#settings)
+  lists every one with its default.
 - Admins are a user group from `enshrouded_server.json`, plus an account list.
   The mod never writes that file.
 
@@ -53,20 +51,21 @@ reach a player. With it off the mod still enforces scope; it just says nothing.
 
 ## Layout
 
-| Path                  | Holds                                               |
-| --------------------- | --------------------------------------------------- |
-| `mods/private-chests` | The mod                                             |
-| `crates/mods-common`  | Helpers the mods here share                         |
-| `xtask`               | The gate, the hooks, the server and schema commands |
-| `fixtures`            | Worlds and configuration a test server starts from  |
-| `vendor`              | Ember, as a submodule, for local development        |
+| Path                  | Holds                                                  |
+| --------------------- | ------------------------------------------------------ |
+| `mods/private-chests` | The mod                                                |
+| `crates/mods-common`  | Helpers the mods here share                            |
+| `xtask`               | The gate, the hooks, the server and schema commands    |
+| `fixtures`            | Worlds and configuration for `cargo xtask server seed` |
+| `vendor`              | Ember, as a submodule, for local development           |
 
 ## Requirements
 
-- Rust 1.98.1, pinned in `rust-toolchain.toml`
+- Rust, at the release `rust-toolchain.toml` pins
 - A C toolchain, for MinHook, the hook engine Ember uses. On Windows, Visual
   Studio Build Tools.
-- [Bun](https://bun.sh), for the repository's own tooling
+- [Bun](https://bun.sh), for the repository's own tooling, at the release
+  `.bun-version` pins
 - `git clone --recurse-submodules`, or `git submodule update --init`
 
 ## License

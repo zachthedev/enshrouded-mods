@@ -12,9 +12,10 @@ An existing clone catches up with `git submodule update --init`.
 
 ## Toolchain
 
-`rust-toolchain.toml` pins Rust 1.98.1, and rustup installs it on the first
+`rust-toolchain.toml` pins the Rust release, and rustup installs it on the first
 cargo command. A C toolchain is needed for MinHook, the hook engine Ember uses.
-[Bun](https://bun.sh) runs the repository's own tooling.
+[Bun](https://bun.sh) runs the repository's own tooling, at the release
+`.bun-version` pins. Continuous integration reads the same file.
 
 The gate calls tools that rustup does not install. `.github/cargo-tools` pins
 the crates.io packages among them, and `.github/go-tools` pins the Go programs,
@@ -126,7 +127,8 @@ A new mod earns a scope. Omit the scope rather than invent one.
 
 Ask what the code describes:
 
-- Keen's engine or the Enshrouded server: Ember, not here
+- Keen's engine or the Enshrouded server:
+  [Ember](https://github.com/zachthedev/enshrouded-ember), not here
 - Something every mod here shares: `crates/mods-common`
 - One mod's own idea: that mod
 

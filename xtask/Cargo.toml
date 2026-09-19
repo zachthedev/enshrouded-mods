@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Repository automation: dev server fetch, fixtures, run, and packaging."
+description = "Repository automation for the mods workspace."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

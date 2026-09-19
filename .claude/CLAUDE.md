@@ -19,23 +19,11 @@ before changing anything.
   `.github/commit-scopes.json`, the file the commit hook reads. Omit the scope
   rather than invent one.
 
-## Which repository a change belongs in
+## Where a change belongs
 
-Ask what the code describes:
-
-- Keen's engine or Keen's game: it goes in
-  [Ember](https://github.com/zachthedev/enshrouded-ember)
-- The mod's own idea: it goes here
-
-Something every mod here shares goes in `crates/mods-common`. One mod's own idea
-goes in that mod.
+[CONTRIBUTING.md](../CONTRIBUTING.md#where-code-goes) says which repository, and
+which crate, a change belongs in.
 
 ## The documentation
 
-| File                                  | Holds                                      |
-| ------------------------------------- | ------------------------------------------ |
-| [CONTRIBUTING.md](../CONTRIBUTING.md) | The gate, the commit convention, the hooks |
-| [docs/dev.md](../docs/dev.md)         | The first run, end to end                  |
-| [docs/install.md](../docs/install.md) | Installing on a dedicated server           |
-| [docs/admin.md](../docs/admin.md)     | The mod's settings and the chat verbs      |
-| [README.md](../README.md)             | What the mods here do                      |
+[README.md](../README.md#documentation) lists every document and what it holds.

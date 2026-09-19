@@ -18,7 +18,7 @@ contact_links:
       A symbol that failed to resolve, a server build Ember does not recognize,
       or no mod loading at all.
   - name: A security problem
-    url: https://github.com/zachthedev/enshrouded-mods/blob/main/SECURITY.md
+    url: https://github.com/zachthedev/enshrouded-mods/security/policy
     about: >
       Anything that lets a player reach what their scope does not allow. Report
       it privately. An issue is public the moment it is opened.

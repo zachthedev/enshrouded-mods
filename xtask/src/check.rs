@@ -701,32 +701,94 @@ mod tests {
         }
     }
 
-    /// A `PostToolUse` hook formats JavaScript on every edit. An extension
-    /// prettier owns and the gate does not check is a file whose formatting
-    /// nothing enforces.
-    #[test]
-    fn prettier_checks_every_extension_it_owns_here() {
-        let step = STEPS
+    /// The extensions in a `{a,b}` brace list, sorted.
+    fn brace_list(pattern: &str) -> Vec<String> {
+        let open = pattern
+            .find('{')
+            .unwrap_or_else(|| panic!("{pattern} holds no brace list"));
+        let close = pattern
+            .rfind('}')
+            .unwrap_or_else(|| panic!("{pattern} holds no brace list"));
+        let mut list: Vec<String> = pattern[open + 1..close]
+            .split(',')
+            .map(str::to_string)
+            .collect();
+        list.sort();
+        list
+    }
+
+    /// The step named `name`.
+    fn step(name: &str) -> &'static Step {
+        STEPS
             .iter()
-            .find(|step| step.name == "prettier")
-            .expect("a prettier step");
-        let glob = step
+            .find(|step| step.name == name)
+            .unwrap_or_else(|| panic!("no {name} step"))
+    }
+
+    /// `.editorconfig` names the extensions prettier owns here, in the section
+    /// its comment introduces, and prettier reads that file. An extension it
+    /// owns that the gate's glob leaves out is a file whose formatting nothing
+    /// enforces, and one the glob adds is formatted to a width no editor
+    /// agrees with.
+    #[test]
+    fn prettier_checks_the_extensions_editorconfig_gives_it() {
+        let editorconfig = std::fs::read_to_string(crate::repo_root().join(".editorconfig"))
+            .expect(".editorconfig is readable");
+        let section = editorconfig
+            .lines()
+            .skip_while(|line| !(line.starts_with('#') && line.contains("prettier owns")))
+            .find(|line| line.starts_with('['))
+            .expect(".editorconfig introduces the section prettier owns");
+
+        let glob = step("prettier")
             .primary
             .command
             .last()
             .expect("the prettier step names a glob");
-        let list = glob
-            .strip_prefix("**/*.{")
-            .and_then(|rest| rest.strip_suffix('}'))
-            .unwrap_or_else(|| panic!("{glob} is not a brace list of extensions"));
-        let covered: Vec<&str> = list.split(',').collect();
+        assert!(
+            glob.starts_with("**/*.{"),
+            "{glob} is not a brace list of extensions"
+        );
+        assert_eq!(
+            brace_list(glob),
+            brace_list(section),
+            "the prettier glob and the .editorconfig section it owns disagree"
+        );
+    }
 
-        for extension in ["md", "yml", "yaml", "json", "js", "mjs", "cjs", "ts"] {
-            assert!(
-                covered.contains(&extension),
-                "the prettier glob skips .{extension}, got {glob}"
-            );
-        }
+    /// `cargo machete` walks the directories the step names, which keeps it
+    /// off Ember's checkout under `vendor/`. They have to be the ones the
+    /// workspace members live under, or a member added under a new directory
+    /// is a crate machete never reads.
+    #[test]
+    fn machete_walks_the_directories_the_members_live_under() {
+        let manifest: toml::Value = toml::from_str(
+            &std::fs::read_to_string(crate::repo_root().join("Cargo.toml"))
+                .expect("the workspace manifest is readable"),
+        )
+        .expect("the workspace manifest parses");
+        let mut members: Vec<&str> = manifest["workspace"]["members"]
+            .as_array()
+            .expect("the workspace lists members")
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .filter_map(|member| member.split('/').next())
+            .collect();
+        members.sort_unstable();
+        members.dedup();
+
+        let command = step("machete").primary.command;
+        assert_eq!(
+            &command[..2],
+            ["cargo", "machete"],
+            "the machete step runs {command:?}"
+        );
+        let mut walked: Vec<&str> = command[2..].to_vec();
+        walked.sort_unstable();
+        assert_eq!(
+            walked, members,
+            "cargo machete walks {walked:?} and the members live under {members:?}"
+        );
     }
 
     /// A failing step is the last one to run, whichever step it is.

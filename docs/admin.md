@@ -3,9 +3,6 @@
 For server admins. [docs/install.md](install.md) covers getting the files in
 place.
 
-This repository is in development and publishes no release yet. What follows is
-the behavior the mod is built for.
-
 ## Scopes
 
 Every placed container and every placed crafting station carries one scope.

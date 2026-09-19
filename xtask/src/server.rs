@@ -127,7 +127,7 @@ mod tests {
 
     /// Build a delegate over a root that holds no files.
     fn delegate(runner: &FakeRunner) -> Delegate<'_> {
-        Delegate::new(runner, PathBuf::from("Z:/repos/zachthedev/enshrouded-mods"))
+        Delegate::new(runner, PathBuf::from("Z:/checkout/enshrouded-mods"))
     }
 
     /// Ember's xtask is reached by its manifest path, never by a directory
@@ -175,7 +175,7 @@ mod tests {
                     .map(|pair| pair[1].clone());
                 assert_eq!(
                     root,
-                    Some("Z:/repos/zachthedev/enshrouded-mods".to_string()),
+                    Some("Z:/checkout/enshrouded-mods".to_string()),
                     "{group} {args:?}"
                 );
             }
