@@ -12,8 +12,9 @@ An existing clone catches up with `git submodule update --init`.
 
 ## Toolchain
 
-`rust-toolchain.toml` pins Rust 1.98.1. A C toolchain is needed for the hook
-engine Ember uses. [Bun](https://bun.sh) runs the repository's own tooling.
+`rust-toolchain.toml` pins Rust 1.98.1, and rustup installs it on the first
+cargo command. A C toolchain is needed for MinHook, the hook engine Ember uses.
+[Bun](https://bun.sh) runs the repository's own tooling.
 
 The gate calls five tools that rustup does not install. `.github/cargo-tools`
 pins their versions and is the only place those numbers live, so this installs
@@ -116,5 +117,5 @@ write stays under `.cache`.
 
 - No path inside a Steam library is ever written to, launched, or injected into.
   A dedicated server for development is fetched separately into `.cache`.
-- No schema dump, string table or other recovered game data is committed. The
-  extractors are committed; their output is not.
+- No schema dump, string table, protocol registry or other recovered game data
+  is committed. The extractors are committed; their output is not.

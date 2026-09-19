@@ -7,6 +7,8 @@ export default {
     "scope-enum": [
       2,
       "always",
+      // The mod names, the directories no crate owns, and the cross-cutting
+      // names. `cargo xtask scopes` prints the same list.
       [
         "private-chests",
         "common",

@@ -4,7 +4,7 @@
 target/
 node_modules/
 
-# SteamCMD, cached server builds, and run directories.
+# SteamCMD, fetched server builds, and run directories.
 .cache/
 
 # Ember, formatted by its own repository.

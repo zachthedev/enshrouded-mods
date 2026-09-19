@@ -92,5 +92,7 @@ Ember matches a server build by a fingerprint read from the executable. A build
 it does not recognize stops with a message rather than hooking the wrong
 function. A release supports the current server build plus the four before it.
 
-When Keen ships a build that is not covered, open a "New Keen build" issue. The
-template asks for the identifiers the fix needs.
+Which builds a release covers is Ember's to decide, so a build that is not
+covered is reported there. Open a "New Keen build" issue in
+[Ember](https://github.com/zachthedev/enshrouded-ember/issues/new/choose). Its
+form asks for the identifiers the fix needs.

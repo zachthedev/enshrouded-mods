@@ -2,7 +2,7 @@
 
 End to end, from a fresh clone to a green gate.
 
-## 1. Clone with the submodule
+## 1. Clone and install the toolchain
 
 Ember lives in its own repository and is vendored here at
 `vendor/enshrouded-ember`.
@@ -18,16 +18,9 @@ The workspace builds the mod against the submodule: `Cargo.toml` points
 `ember-sdk`, `ember-holistic` and `ember-enshrouded` at `vendor/`. Nothing else
 is needed for the paths to resolve.
 
-To build against a checkout of Ember somewhere else, put a `[patch.crates-io]`
-block in a `.cargo/config.toml` in a directory **above** this repository. Cargo
-merges config from every parent directory, and keeping it outside means this
-repository's own `.cargo/config.toml` stays untouched.
-
-## 2. Install the toolchain
-
 `rust-toolchain.toml` pins Rust 1.98.1, and rustup installs it on the first
-cargo command. A C toolchain is needed for the hook engine Ember uses; on
-Windows that is Visual Studio Build Tools.
+cargo command. A C toolchain is needed for MinHook, the hook engine Ember uses;
+on Windows that is Visual Studio Build Tools.
 
 The gate calls five tools rustup does not ship. `.github/cargo-tools` pins their
 versions and is the only place those numbers live, so this installs what
@@ -50,16 +43,21 @@ the markup formatter with one command:
 bun install
 ```
 
-## 3. Fetch a dedicated server
+To build against a checkout of Ember somewhere else, put a `[patch.crates-io]`
+block in a `.cargo/config.toml` in a directory **above** this repository. Cargo
+merges config from every parent directory, and keeping it outside means this
+repository's own `.cargo/config.toml` stays untouched.
+
+## 2. Fetch a dedicated server
 
 ```sh
 cargo xtask server fetch
 ```
 
-This pulls a dedicated server from SteamCMD into `.cache/`, which is gitignored.
+This pulls a dedicated server from SteamCMD into `.cache`, which is gitignored.
 Anonymous login works for app 2278520, so no credentials are involved.
 
-A build lands in a directory named for its Steam buildid, which is the key
+A build lands in a directory named for its Steam build id, which is the key
 Steam, SteamCMD and the depot manifest all speak:
 
 ```text
@@ -78,29 +76,29 @@ its own files, and nothing here ever writes to, launches, or injects into one.
 
 The server is 8.4 GB. Fetch it once.
 
-## 4. Extract the schema
+## 3. Extract the schema
 
 ```sh
 cargo xtask schema extract
 ```
 
 This reads the fetched server's executable and writes the reflection schema, the
-string table, the descriptor table and the program records into
-`.cache/schema/<buildid>/`.
+protocol registry, the UI event list, the descriptor and string tables and the
+program records into `.cache/schema/<buildid>/`.
 
-The buildid names the directory. It is not what the loader matches at run time:
+The build id names the directory. It is not what the loader matches at run time:
 Ember identifies a build by the CodeView fingerprint in the image itself,
-because the buildid is not readable from the running process.
+because the build id is not readable from the running process.
 
 **This step is required.** Nothing recovered from a Keen binary is committed to
-either repository: no schema dump, no string table, no game data. The extractors
-are committed and every contributor runs them against a server they fetched
-themselves. Anything the extractor produces is derived data, lives under
-`.cache/`, and is regenerated rather than shared.
+this repository: no schema dump, no string table, no protocol registry, no game
+data. The extractors are committed and every contributor runs them against a
+server they fetched themselves. Anything the extractor produces is derived data,
+lives under `.cache`, and is regenerated rather than shared.
 
 The loop is fetch, extract, check.
 
-## 5. Run the gate
+## 4. Run the gate
 
 ```sh
 cargo xtask check
@@ -133,7 +131,7 @@ names itself, rather than being skipped.
 
 `pre-push` runs the same command, and so does continuous integration.
 
-## The server commands
+## The server and schema commands
 
 `server` and `schema` forward to Ember's xtask through the submodule, with
 `--root` set to this repository, so every file they write lands under `.cache`
@@ -142,9 +140,9 @@ here rather than in Ember's checkout.
 ```sh
 cargo xtask server fetch          # pull a dedicated server from SteamCMD
 cargo xtask server seed           # lay a fixture world into a run directory
-cargo xtask server run            # start it with the mod loaded
+cargo xtask server run            # start it, optionally injecting the loader
 cargo xtask server logs           # tail it
-cargo xtask server stop           # stop it
+cargo xtask server stop           # ask it to shut down, and wait
 cargo xtask schema extract        # read the schema out of a fetched build
 cargo xtask schema list           # list the extractions under .cache/schema
 cargo xtask schema diff old new   # compare two extractions by buildid

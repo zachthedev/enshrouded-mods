@@ -12,9 +12,14 @@ Paste the summary block from `cargo xtask check`.
 
 ## Tested against
 
-- Server build (revision from the `.kfc` header):
+- Server build id and revision:
 - Host: Windows, Wine or Proton
 - Loaded as: proxy library, injection, or not loaded
+
+## Every change
+
+- [ ] Nothing recovered from a Keen binary is in the diff. The extractors are
+      committed and what they produce is not.
 
 <!--
 A change that cannot reach a server says so here and names what it did instead.

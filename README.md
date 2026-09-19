@@ -49,23 +49,25 @@ reach a player. With it off the mod still enforces scope; it just says nothing.
 | ---------------------------------- | ------------------------------------------ |
 | [docs/install.md](docs/install.md) | Server admins installing the mod           |
 | [docs/admin.md](docs/admin.md)     | The mod's settings and the chat verbs      |
-| [docs/dev.md](docs/dev.md)         | The first development run, end to end      |
+| [docs/dev.md](docs/dev.md)         | The first run, end to end                  |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | The gate, the commit convention, the hooks |
 
 ## Layout
 
-| Path                  | Holds                                              |
-| --------------------- | -------------------------------------------------- |
-| `mods/private-chests` | The mod                                            |
-| `crates/mods-common`  | Helpers the mods here share                        |
-| `xtask`               | The gate, the hooks, the development server        |
-| `fixtures`            | Worlds and configuration a test server starts from |
-| `vendor`              | Ember, as a submodule, for local development       |
+| Path                  | Holds                                               |
+| --------------------- | --------------------------------------------------- |
+| `mods/private-chests` | The mod                                             |
+| `crates/mods-common`  | Helpers the mods here share                         |
+| `xtask`               | The gate, the hooks, the server and schema commands |
+| `fixtures`            | Worlds and configuration a test server starts from  |
+| `vendor`              | Ember, as a submodule, for local development        |
 
 ## Requirements
 
 - Rust 1.98.1, pinned in `rust-toolchain.toml`
-- A C toolchain, for the hook engine Ember uses
+- A C toolchain, for MinHook, the hook engine Ember uses. On Windows, Visual
+  Studio Build Tools.
+- [Bun](https://bun.sh), for the repository's own tooling
 - `git clone --recurse-submodules`, or `git submodule update --init`
 
 ## License
