@@ -5,12 +5,12 @@
 //! The owner sets the scope for `Private` and `Public`, any team member sets it
 //! for `Team`, and an admin sets any of them.
 //!
-//! Each behavior is a separate setting, and `docs/admin.md` lists every one
-//! with its default. `craftingPool` filters what a crafting pull draws from:
-//! workshop crafting, the build hammer, the Material Catalog and factory pulls
-//! see only the acting player's own scope. `restrictOpen` and `quickStack`
-//! extend the same ownership model to opening a container and to quick-stack
-//! deposits.
+//! Each behavior is a separate setting, and this crate's own `docs/admin.md`
+//! lists every one with its default. `craftingPool` filters what a crafting
+//! pull draws from: workshop crafting, the build hammer, the Material Catalog
+//! and factory pulls see only the acting player's own scope. `restrictOpen`
+//! and `quickStack` extend the same ownership model to opening a container and
+//! to quick-stack deposits.
 //!
 //! Identity splits the way the game already splits it. A character owns items,
 //! so `Private` matches a character. An account owns settings, so team
