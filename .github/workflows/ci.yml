@@ -17,10 +17,19 @@ env:
 # no pull request and no cooldown; a commit cannot. Dependabot bumps the hash
 # and keeps the version comment current.
 jobs:
+  # The pre-push hook runs this gate on whichever host a contributor uses. Code
+  # behind cfg(windows) or its inverse builds on one host only, so both run it.
   gate:
-    runs-on: windows-latest
+    strategy:
+      # A failure on one host says nothing about the other, so both legs finish.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Ember is a submodule under vendor/, and the workspace builds against it.
         with:
           submodules: recursive
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -41,6 +50,7 @@ jobs:
 
   commits:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
