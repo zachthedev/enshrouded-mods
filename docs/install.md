@@ -3,9 +3,6 @@
 For server admins. The mod is server side. Players install nothing and join with
 a stock client.
 
-This repository is in development and publishes no release yet. What follows is
-the install shape the mod is built for.
-
 ## What you need
 
 - An Enshrouded dedicated server you run yourself
@@ -90,9 +87,11 @@ the client install is not a server.
 
 Ember matches a server build by a fingerprint read from the executable. A build
 it does not recognize stops with a message rather than hooking the wrong
-function. A release supports the current server build plus the four before it.
+function.
 
-Which builds a release covers is Ember's to decide, so a build that is not
-covered is reported there. Open a "New Keen build" issue in
+Which builds a release covers is Ember's to decide, and its README's
+[Surviving game updates](https://github.com/zachthedev/enshrouded-ember#surviving-game-updates)
+says which. A build that is not covered is reported there. Open a "New Keen
+build" issue in
 [Ember](https://github.com/zachthedev/enshrouded-ember/issues/new/choose). Its
 form asks for the identifiers the fix needs.

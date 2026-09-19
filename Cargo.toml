@@ -20,7 +20,6 @@ mods-common = { version = "0.0.0", path = "crates/mods-common" }
 # mod that reaches the engine or the game layer adds that crate here beside it.
 ember-sdk = { version = "0.0.0", path = "vendor/enshrouded-ember/crates/ember-sdk" }
 
-# Versions resolved against crates.io on 2026-09-17.
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 owo-colors = { version = "4.4.0", features = ["supports-colors"] }
