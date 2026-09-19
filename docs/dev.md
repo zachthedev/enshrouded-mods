@@ -22,18 +22,21 @@ is needed for the paths to resolve.
 cargo command. A C toolchain is needed for MinHook, the hook engine Ember uses;
 on Windows that is Visual Studio Build Tools.
 
-The gate calls five tools rustup does not ship. `.github/cargo-tools` pins their
-versions and is the only place those numbers live, so this installs what
-continuous integration installs:
+The gate calls tools that rustup does not install. `.github/cargo-tools` pins
+the crates.io packages among them, and `.github/go-tools` pins the Go programs,
+which need [Go](https://go.dev) to install. The versions live in those files and
+nowhere else, so this installs what continuous integration installs:
 
 ```powershell
 cargo install --locked @(Get-Content .github/cargo-tools | Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() })
+Get-Content .github/go-tools | Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() } | ForEach-Object { go install $_ }
 ```
 
 On a shell without PowerShell:
 
 ```sh
 cargo install --locked $(grep -v '^#' .github/cargo-tools | grep .)
+grep -v '^#' .github/go-tools | grep . | xargs -n 1 go install
 ```
 
 [Bun](https://bun.sh) runs the repository's own tooling. Install the hooks and
@@ -104,30 +107,10 @@ The loop is fetch, extract, check.
 cargo xtask check
 ```
 
-Nine steps, in order, stopping at the first failure:
-
-```text
-fmt       cargo fmt --check
-taplo     taplo fmt --check
-clippy    cargo clippy --workspace --all-targets -- -D warnings
-tests     cargo nextest run --workspace
-doctests  cargo test --workspace --doc
-deny      cargo deny check
-machete   cargo machete crates mods xtask
-audit     cargo audit
-prettier  bunx --no-install --bun prettier --check
-```
-
-`taplo` reads `.taplo.toml` for the files it covers and the one directory it
-leaves alone, which is Ember's checkout under `vendor/`. `prettier` covers
-`.md`, `.yml`, `.yaml`, `.json`, `.js`, `.mjs`, `.cjs` and `.ts`.
-
-`doctests` runs whether or not `cargo-nextest` is installed, because
-`cargo nextest` runs none of them.
-
-`tests` falls back to `cargo test --workspace` when `cargo-nextest` is absent,
-and the summary says which one ran. Any other missing tool stops the gate and
-names itself, rather than being skipped.
+It runs the steps in the gate table in
+[CONTRIBUTING.md](../CONTRIBUTING.md#the-gate), in order, stopping at the first
+failure. That section also says what each step covers and what the gate does
+when a tool is missing.
 
 `pre-push` runs the same command, and so does continuous integration.
 

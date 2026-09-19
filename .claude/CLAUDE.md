@@ -15,9 +15,9 @@ before changing anything.
 - **Nothing recovered from a Keen binary is committed.** No schema dump, no
   string table, no protocol registry, no game data. The extractors are
   committed; their output lives under `.cache` and is regenerated.
-- **Commit scopes come from `cargo xtask scopes`.** That list and
-  `commitlint.config.js` are the same list. Omit the scope rather than invent
-  one.
+- **Commit scopes come from `cargo xtask scopes`.** It prints
+  `.github/commit-scopes.json`, the file the commit hook reads. Omit the scope
+  rather than invent one.
 
 ## Which repository a change belongs in
 

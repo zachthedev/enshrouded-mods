@@ -15,21 +15,26 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 
 use crate::runner::Processes;
 
-/// Commit scopes: the workspace crate names, the fixtures directory, and the
-/// three cross-cutting names no crate will ever own.
-const SCOPES: &[&str] = &[
-    "private-chests",
-    "common",
-    "xtask",
-    "fixtures",
-    "deps",
-    "ci",
-    "release",
-];
+/// The commit scope vocabulary: the workspace crate names, the fixtures
+/// directory, and the cross-cutting names no crate will ever own.
+///
+/// `commitlint.config.js` reads the same file, so the scopes this command
+/// prints and the scopes the commit hook accepts are one list.
+const SCOPES_JSON: &str = include_str!("../../.github/commit-scopes.json");
+
+/// The commit scopes, in the order the scope file lists them.
+///
+/// # Errors
+///
+/// Returns an error when the scope file is not a JSON array of strings.
+fn scopes() -> anyhow::Result<Vec<String>> {
+    serde_json::from_str(SCOPES_JSON).context("reading .github/commit-scopes.json")
+}
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "Repository automation for the mods workspace")]
@@ -95,7 +100,7 @@ fn dispatch() -> anyhow::Result<ExitCode> {
 
     match cli.command {
         Command::Scopes => {
-            for scope in SCOPES {
+            for scope in scopes()? {
                 println!("{scope}");
             }
             Ok(ExitCode::SUCCESS)
@@ -129,7 +134,7 @@ fn dispatch() -> anyhow::Result<ExitCode> {
 mod tests {
     use clap::CommandFactory;
 
-    use super::{Cli, SCOPES, repo_root};
+    use super::{Cli, repo_root, scopes};
 
     /// Clap rejects an ambiguous or malformed command definition, and a broken
     /// one only shows up at run time otherwise.
@@ -138,17 +143,25 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    /// The scope list feeds `commitlint.config.js`, so a duplicate or an empty
-    /// entry would accept a commit nobody meant to allow.
+    /// The scope file feeds the commit hook, so a duplicate or an empty entry
+    /// would accept a commit nobody meant to allow.
     #[test]
     fn scopes_are_distinct_and_named() {
-        let mut seen = SCOPES.to_vec();
-        let count = seen.len();
+        let scopes = scopes().expect("the scope file is a JSON array of strings");
+        assert!(!scopes.is_empty(), "the scope file names no scope");
+
+        let mut seen = scopes.clone();
         seen.sort_unstable();
         seen.dedup();
-
-        assert_eq!(seen.len(), count, "two scopes share a name");
-        assert!(SCOPES.iter().all(|scope| !scope.is_empty()));
+        assert_eq!(
+            seen.len(),
+            scopes.len(),
+            "a scope appears twice: {scopes:?}"
+        );
+        assert!(
+            scopes.iter().all(|scope| !scope.is_empty()),
+            "a scope is empty: {scopes:?}"
+        );
     }
 
     /// The root is the workspace root, which is where the gate and the hooks

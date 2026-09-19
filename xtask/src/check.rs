@@ -1,8 +1,9 @@
 //! The gate every change passes, behind one command.
 //!
 //! `CONTRIBUTING.md`, the `pre-push` hook and continuous integration all call
-//! `cargo xtask check`, so the three cannot drift apart. Steps run in the order
-//! they are declared and the run stops at the first one that does not pass.
+//! `cargo xtask check`, so none of them can drift from the others. Steps run in
+//! the order they are declared and the run stops at the first one that does not
+//! pass.
 
 use std::io::{self, Write};
 
@@ -172,6 +173,63 @@ pub const STEPS: &[Step] = &[
                 "**/*.{md,yml,yaml,json,js,mjs,cjs,ts}",
             ],
             install: "bun install",
+        },
+        fallback: None,
+    },
+    Step {
+        name: "actionlint",
+        primary: Run {
+            tool: "actionlint",
+            probe: Probe::Command(&["actionlint", "-version"]),
+            // No path argument. actionlint resolves the enclosing git
+            // repository and reads its `.github/workflows`, which leaves
+            // Ember's checkout under vendor/ to Ember's own gate. It takes
+            // files rather than directories, so naming the directory would be
+            // a read error rather than a narrowing.
+            //
+            // The empty flags turn off the external analyzers. actionlint runs
+            // shellcheck and pyflakes when it finds them on PATH and says
+            // nothing at all when it does not, and ubuntu-latest carries
+            // shellcheck while windows-latest does not. Left on, the matrix legs
+            // check different things and the quiet leg reports a pass for an
+            // analysis it never ran.
+            command: &["actionlint", "-shellcheck=", "-pyflakes="],
+            // The version is here and in .github/go-tools, and a test asserts
+            // the two agree. actionlint is on neither crates.io nor
+            // taiki-e/install-action, so it cannot sit in .github/cargo-tools
+            // beside the rest.
+            install: "go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12",
+        },
+        fallback: None,
+    },
+    Step {
+        name: "zizmor",
+        primary: Run {
+            tool: "zizmor",
+            probe: Probe::Command(&["zizmor", "--version"]),
+            // Named paths, because Ember's checkout under vendor/ carries
+            // workflows of its own and Ember's gate covers them.
+            //
+            // --strict-collection makes a file zizmor cannot parse a failure.
+            // Without it zizmor logs a warning, drops the file, and reports no
+            // findings for a workflow it never read, which a byte order mark
+            // at the top of the file is enough to cause.
+            //
+            // --offline keeps the audit from needing a GitHub token, so a
+            // runner and a laptop report the same findings. --config names the
+            // committed configuration, so ZIZMOR_CONFIG in the environment
+            // cannot swap it for another.
+            command: &[
+                "zizmor",
+                "--no-progress",
+                "--offline",
+                "--strict-collection",
+                "--config",
+                ".github/zizmor.yml",
+                ".github/workflows",
+                ".github/dependabot.yml",
+            ],
+            install: "cargo install zizmor --locked",
         },
         fallback: None,
     },
@@ -488,8 +546,9 @@ mod tests {
         }
     }
 
-    /// The gate is the two source formatters, lint, the two test runs, the
-    /// three supply chain checks, then the markup formatter.
+    /// The gate is the source formatters, lint, the test runs, the supply chain
+    /// checks, the markup formatter, then the workflow checks, and each step
+    /// runs the command its row names.
     #[test]
     fn steps_run_in_the_declared_order() {
         let runner = FakeRunner::all_installed();
@@ -499,8 +558,17 @@ mod tests {
         assert_eq!(
             names,
             [
-                "fmt", "taplo", "clippy", "tests", "doctests", "deny", "machete", "audit",
-                "prettier"
+                "fmt",
+                "taplo",
+                "clippy",
+                "tests",
+                "doctests",
+                "deny",
+                "machete",
+                "audit",
+                "prettier",
+                "actionlint",
+                "zizmor"
             ]
         );
         assert_eq!(
@@ -515,9 +583,95 @@ mod tests {
                 "cargo machete crates mods xtask",
                 "cargo audit",
                 "bunx --no-install --bun prettier --check **/*.{md,yml,yaml,json,js,mjs,cjs,ts}",
+                "actionlint -shellcheck= -pyflakes=",
+                "zizmor --no-progress --offline --strict-collection --config .github/zizmor.yml \
+                 .github/workflows .github/dependabot.yml",
             ]
         );
         assert!(rows.iter().all(Row::passed));
+    }
+
+    /// actionlint runs shellcheck and pyflakes when it finds them on `PATH` and
+    /// skips them in silence when it does not. `ubuntu-latest` carries
+    /// shellcheck and `windows-latest` does not, so without the flags the matrix
+    /// legs check different things and the quiet leg reports a pass for an
+    /// analysis it never ran.
+    #[test]
+    fn actionlint_takes_no_analysis_that_depends_on_what_the_host_has() {
+        let step = STEPS
+            .iter()
+            .find(|step| step.name == "actionlint")
+            .expect("an actionlint step");
+
+        for flag in ["-shellcheck=", "-pyflakes="] {
+            assert!(
+                step.primary.command.contains(&flag),
+                "{flag} is absent, so that pass is left to whatever the host has: {:?}",
+                step.primary.command
+            );
+        }
+    }
+
+    /// Ember's checkout under `vendor/` carries workflows of its own, and
+    /// Ember's gate covers them. `zizmor` walks whatever path it is given, so a
+    /// bare `.` audits them here too and fails this gate on files this
+    /// repository does not own.
+    ///
+    /// actionlint needs no such argument. It resolves the enclosing git
+    /// repository and reads only that one's workflows.
+    #[test]
+    fn zizmor_names_its_paths_rather_than_walking_the_tree() {
+        let step = STEPS
+            .iter()
+            .find(|step| step.name == "zizmor")
+            .expect("a zizmor step");
+
+        let paths: Vec<&&str> = step
+            .primary
+            .command
+            .iter()
+            .filter(|argument| argument.starts_with(".github/"))
+            .collect();
+        assert!(
+            !paths.is_empty(),
+            "zizmor names no path under .github, so it walks the whole tree: {:?}",
+            step.primary.command
+        );
+        assert!(
+            !step.primary.command.contains(&"."),
+            "zizmor walks the whole tree, which reaches vendor/: {:?}",
+            step.primary.command
+        );
+    }
+
+    /// zizmor drops a workflow it cannot parse, logs a warning, and reports no
+    /// findings, so a byte order mark at the top of a workflow hides every
+    /// finding in it. `--strict-collection` turns that into a failure.
+    ///
+    /// zizmor also reads its configuration from `ZIZMOR_CONFIG`. Naming the
+    /// committed file keeps an environment variable from changing what the
+    /// gate reports.
+    #[test]
+    fn zizmor_fails_on_an_unread_file_and_reads_only_the_committed_config() {
+        let step = STEPS
+            .iter()
+            .find(|step| step.name == "zizmor")
+            .expect("a zizmor step");
+        let command = step.primary.command;
+
+        assert!(
+            command.contains(&"--strict-collection"),
+            "zizmor skips a file it cannot parse and still passes: {command:?}"
+        );
+        let config = command
+            .iter()
+            .position(|argument| *argument == "--config")
+            .and_then(|at| command.get(at + 1));
+        assert_eq!(
+            config,
+            Some(&".github/zizmor.yml"),
+            "zizmor takes its configuration from wherever the environment says: {command:?}"
+        );
     }
 
     /// `cargo nextest run` runs no doctests, so a doctest that stops compiling
