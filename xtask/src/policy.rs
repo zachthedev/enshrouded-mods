@@ -521,19 +521,6 @@ fn prose_files(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// The package an install command names, for a command that is a
-/// `cargo install`.
-///
-/// The flag and the package can come in either order, so the package is the
-/// first word past `cargo install` that is not a flag.
-fn cargo_install_package(install: &str) -> Option<&str> {
-    let mut words = install.split_whitespace();
-    if words.next()? != "cargo" || words.next()? != "install" {
-        return None;
-    }
-    words.find(|word| !word.starts_with('-'))
-}
-
 /// Report whether `source` uses `identifier` as a whole word outside comments.
 fn mentions(source: &str, identifier: &str) -> bool {
     let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
@@ -944,107 +931,6 @@ fn build_directory_ids(text: &str) -> Vec<String> {
         .collect()
 }
 
-// ///////////////////////////////////////////////
-// Workflow scripts
-// ///////////////////////////////////////////////
-
-/// The lines of a PowerShell script that run something, with comment lines
-/// dropped and each line trimmed.
-fn script_lines(script: &str) -> impl Iterator<Item = &str> {
-    script
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.starts_with('#'))
-}
-
-/// The variable a script assigns from `Get-Content <path>`, if one.
-///
-/// A path named in a comment assigns nothing, and neither does a path a script
-/// only prints, so nothing but a read satisfies this.
-fn pin_file_variable(script: &str, path: &str) -> Option<String> {
-    script_lines(script).find_map(|line| {
-        let (left, right) = line.split_once('=')?;
-        let name = left.trim().strip_prefix('$')?;
-        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-            return None;
-        }
-        let mut words = right.split_whitespace();
-        (words.next() == Some("Get-Content") && words.next() == Some(path))
-            .then(|| name.to_string())
-    })
-}
-
-/// Every `foreach` binding a script makes, as the element variable and the
-/// collection variable it walks, both without their `$`.
-fn foreach_bindings(script: &str) -> Vec<(String, String)> {
-    script_lines(script)
-        .filter_map(|line| {
-            let open = line
-                .strip_prefix("foreach")?
-                .trim_start()
-                .strip_prefix('(')?;
-            let head = open.split(')').next()?;
-            let mut words = head.split_whitespace();
-            let element = words.next()?.strip_prefix('$')?;
-            if words.next()? != "in" {
-                return None;
-            }
-            let collection = words.next()?.strip_prefix('$')?;
-            Some((element.to_string(), collection.to_string()))
-        })
-        .collect()
-}
-
-/// The arguments each `program` invocation in a script carries.
-///
-/// `program` may be several words, so `go install` matches as one name rather
-/// than as `go` with `install` read as its first argument.
-fn invocations<'a>(script: &'a str, program: &str) -> Vec<Vec<&'a str>> {
-    script_lines(script)
-        .filter_map(|line| {
-            let rest = line.strip_prefix(program)?;
-            rest.starts_with(char::is_whitespace)
-                .then(|| rest.split_whitespace().collect())
-        })
-        .collect()
-}
-
-/// Every step output a PowerShell script writes, as the output's name and the
-/// value written.
-fn step_outputs(script: &str) -> Vec<(String, String)> {
-    script_lines(script)
-        .filter(|line| line.contains("$env:GITHUB_OUTPUT"))
-        .filter_map(|line| {
-            let written = line.split(">>").next()?.trim();
-            let body = written.strip_prefix('"')?.strip_suffix('"')?;
-            let (name, value) = body.split_once('=')?;
-            Some((name.to_string(), value.to_string()))
-        })
-        .collect()
-}
-
-/// The `steps.<id>.outputs.<name>` a workflow expression reads, if that is all
-/// it reads.
-///
-/// An input carrying anything beside the expression is a literal in part, which
-/// is what this refuses.
-fn step_output_reference(input: &str) -> Option<(String, String)> {
-    let body = input.trim().strip_prefix("${{")?.strip_suffix("}}")?.trim();
-    let mut parts = body.split('.');
-    if parts.next()? != "steps" {
-        return None;
-    }
-    let id = parts.next()?;
-    if parts.next()? != "outputs" {
-        return None;
-    }
-    let name = parts.next()?;
-    if parts.next().is_some() || id.is_empty() || name.is_empty() {
-        return None;
-    }
-    Some((id.to_string(), name.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -1055,11 +941,10 @@ mod tests {
     use yaml_rust2::{Yaml, YamlLoader};
 
     use super::{
-        XTASK, bare_references, build_directory_ids, cargo_install_package, code_span_lists,
-        ember_names, ember_variable_literals, first_column, first_column_links, foreach_bindings,
-        holds_version, invocations, is_exact_release, mentions, pin_file_variable, prose_files,
-        prose_kind, prose_paragraphs, reference_problem, repo_root, rust_sources, section,
-        stated_counts, step_output_reference, step_outputs, without_placeholders, workflow_uses,
+        XTASK, bare_references, build_directory_ids, code_span_lists, ember_names,
+        ember_variable_literals, first_column, first_column_links, holds_version, is_exact_release,
+        mentions, prose_files, prose_kind, prose_paragraphs, reference_problem, repo_root,
+        rust_sources, section, stated_counts, without_placeholders, workflow_uses,
         workspace_inherited, xtask_references,
     };
 
@@ -1233,64 +1118,6 @@ mod tests {
         );
     }
 
-    /// actionlint is a Go program, and neither runner image puts a Go on `PATH`
-    /// that builds it. The gate job installs one with `actions/setup-go` before
-    /// the step that reads `.github/go-tools`, at an exact release, because a
-    /// range resolves at run time and a resolved release is under no cooldown.
-    /// That step has to stop on a failed install, or the gate reports the tool
-    /// missing one step later and names the wrong cause.
-    #[test]
-    fn the_go_tools_install_under_an_exact_go_release() {
-        let workflow = yaml(".github/workflows/ci.yml");
-        let steps = workflow["jobs"]["gate"]["steps"]
-            .as_vec()
-            .expect("the gate job lists steps");
-
-        let setup = steps
-            .iter()
-            .position(|step| {
-                step["uses"]
-                    .as_str()
-                    .is_some_and(|uses| uses.starts_with("actions/setup-go@"))
-            })
-            .expect("the gate job installs Go with actions/setup-go");
-        let install = steps
-            .iter()
-            .position(|step| {
-                step["run"]
-                    .as_str()
-                    .is_some_and(|run| pin_file_variable(run, ".github/go-tools").is_some())
-            })
-            .expect("a gate step reads .github/go-tools into a variable");
-        assert!(
-            setup < install,
-            "setup-go runs after the step that needs its Go"
-        );
-
-        let options = &steps[setup]["with"];
-        let version = options["go-version"].as_str().unwrap_or("");
-        let exact = version.split('.').count() == 3
-            && version
-                .split('.')
-                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
-        assert!(
-            exact,
-            "setup-go takes {:?} as go-version, which is not one exact release",
-            options["go-version"]
-        );
-        assert_eq!(
-            options["cache"].as_bool(),
-            Some(false),
-            "setup-go caches on a go.sum this repository does not have"
-        );
-
-        let script = steps[install]["run"].as_str().unwrap_or("");
-        assert!(
-            script.contains("$LASTEXITCODE -ne 0"),
-            "the install step does not stop on a failed go install:\n{script}"
-        );
-    }
-
     /// Dependabot's cooldown is the wait between a version being published and
     /// a pull request proposing it, and an ecosystem with no cooldown block
     /// waits for nothing. zizmor's `dependabot-cooldown` refuses a cooldown
@@ -1387,311 +1214,6 @@ mod tests {
         );
     }
 
-    /// Every tool the gate installs with `cargo install` carries a version, in
-    /// one file. A second copy of a version is a copy that drifts.
-    ///
-    /// The check runs both ways. A step whose tool is unpinned installs
-    /// whatever the registry serves today, and a pinned entry no step installs
-    /// is a version continuous integration fetches for nothing.
-    #[test]
-    fn the_pinned_tool_file_and_the_gate_name_the_same_tools() {
-        let pinned: Vec<(String, String)> = pinned_tools();
-        assert!(!pinned.is_empty(), "the pinned tool file names nothing");
-
-        let mut installed: BTreeSet<String> = BTreeSet::new();
-        for step in crate::check::STEPS {
-            for run in std::iter::once(&step.primary).chain(step.fallback.as_ref()) {
-                let Some(package) = cargo_install_package(run.install) else {
-                    continue;
-                };
-                assert_eq!(
-                    package, run.tool,
-                    "the {} step names {} and installs {package}",
-                    step.name, run.tool
-                );
-                let found = pinned.iter().filter(|(name, _)| name == package).count();
-                assert_eq!(
-                    found, 1,
-                    "{package} appears {found} times in .github/cargo-tools"
-                );
-                installed.insert(package.to_string());
-            }
-        }
-
-        let unused: Vec<&String> = pinned
-            .iter()
-            .map(|(name, _)| name)
-            .filter(|name| !installed.contains(*name))
-            .collect();
-        assert!(
-            unused.is_empty(),
-            "no gate step installs {unused:?} from .github/cargo-tools"
-        );
-    }
-
-    /// The flag and the package name come in either order, and a step that
-    /// installs through rustup or bun names no package at all.
-    #[test]
-    fn cargo_install_package_reads_either_argument_order() {
-        let cases = [
-            ("cargo install cargo-deny --locked", Some("cargo-deny")),
-            ("cargo install --locked cargo-deny", Some("cargo-deny")),
-            ("cargo install taplo-cli --locked", Some("taplo-cli")),
-            ("rustup component add rustfmt", None),
-            ("rustup toolchain install stable", None),
-            ("bun install", None),
-            ("cargo install", None),
-            ("cargo install --locked", None),
-            ("", None),
-        ];
-
-        for (install, expected) in cases {
-            assert_eq!(cargo_install_package(install), expected, "{install:?}");
-        }
-    }
-
-    /// The one gate step whose script reads `pin`, as its `id` and its script.
-    ///
-    /// The step is found by the read itself. A step naming the file in a
-    /// comment reads nothing, so it is not this one.
-    fn gate_step_reading(pin: &str) -> (String, String) {
-        let workflow = yaml(".github/workflows/ci.yml");
-        let steps = workflow["jobs"]["gate"]["steps"]
-            .as_vec()
-            .expect("the gate job lists steps")
-            .clone();
-        let found: Vec<(String, String)> = steps
-            .iter()
-            .filter_map(|step| {
-                let script = step["run"].as_str()?;
-                pin_file_variable(script, pin)?;
-                let id = step["id"].as_str().unwrap_or("").to_string();
-                Some((id, script.to_string()))
-            })
-            .collect();
-        assert_eq!(
-            found.len(),
-            1,
-            "{} gate steps read {pin} into a variable, and the check wants the one that does",
-            found.len()
-        );
-        found.into_iter().next().expect("one step")
-    }
-
-    /// Every pinned release the workflow installs reaches the command that
-    /// installs it through a variable the same script sets from that release's
-    /// pin file.
-    ///
-    /// Reading the workflow for a pin file's name proves nothing. A comment
-    /// naming the file satisfies that while the executed line installs a
-    /// release of its own, and the two drift with nothing to notice. The tool
-    /// names are spelled out, because a bare release carries none; the releases
-    /// never are.
-    #[test]
-    fn every_release_the_workflow_installs_is_read_from_its_pin_file() {
-        let workflow = yaml(".github/workflows/ci.yml");
-        let steps = workflow["jobs"]["gate"]["steps"]
-            .as_vec()
-            .expect("the gate job lists steps");
-
-        let install = steps
-            .iter()
-            .find(|step| {
-                step["uses"]
-                    .as_str()
-                    .is_some_and(|uses| uses.starts_with("taiki-e/install-action@"))
-            })
-            .expect("the gate job installs tools with taiki-e/install-action");
-        let input = install["with"]["tool"]
-            .as_str()
-            .expect("install-action takes a tool list");
-        let (id, output) = step_output_reference(input).unwrap_or_else(|| {
-            panic!("install-action takes {input:?}, which is not one step output on its own")
-        });
-
-        let (reader, script) = gate_step_reading(".github/cargo-tools");
-        assert_eq!(
-            reader, id,
-            "install-action reads the {id} step and {reader} is the step that reads the pin file"
-        );
-        let written = step_outputs(&script)
-            .into_iter()
-            .find(|(name, _)| *name == output)
-            .map_or_else(
-                || panic!("the {id} step writes no {output} output"),
-                |(_, value)| value,
-            );
-
-        for pin in [".github/cargo-tools", crate::check::SHELLCHECK_PIN] {
-            let variable = pin_file_variable(&script, pin).unwrap_or_else(|| {
-                panic!("the {id} step sets no variable from {pin}, so nothing ties the two")
-            });
-            assert!(
-                written.contains(&format!("${variable}")),
-                "the {output} output is {written:?}, which never reads the ${variable} that holds {pin}"
-            );
-        }
-
-        let text = read(".github/workflows/ci.yml");
-        for (tool, version) in pinned_tools() {
-            assert!(
-                !text.contains(&format!("{tool}@{version}")),
-                "the workflow carries its own copy of {tool}@{version}"
-            );
-        }
-        for entry in pinned_go_tools() {
-            assert!(
-                !text.contains(&entry),
-                "the workflow carries its own copy of {entry}"
-            );
-        }
-        let shellcheck = read(crate::check::SHELLCHECK_PIN);
-        let release = crate::check::pinned_release(&shellcheck)
-            .expect("the ShellCheck pin file holds a release");
-        assert!(
-            !holds_version(&text, release),
-            "the workflow carries its own copy of the release {} pins",
-            crate::check::SHELLCHECK_PIN
-        );
-    }
-
-    /// `go install` runs the entries the pin file holds, through a variable the
-    /// same script sets from that file, never a coordinate written into the
-    /// script beside it.
-    #[test]
-    fn the_go_tool_install_runs_only_what_the_pin_file_holds() {
-        let (_, script) = gate_step_reading(".github/go-tools");
-        let held = pin_file_variable(&script, ".github/go-tools").expect("the step reads the file");
-        let bound = foreach_bindings(&script);
-
-        let calls = invocations(&script, "go install");
-        assert!(
-            !calls.is_empty(),
-            "the step runs no `go install`:\n{script}"
-        );
-        for arguments in calls {
-            assert_eq!(
-                arguments.len(),
-                1,
-                "`go install` takes {arguments:?} rather than one variable"
-            );
-            let read = arguments[0]
-                .strip_prefix('$')
-                .unwrap_or_else(|| panic!("`go install` takes the literal {:?}", arguments[0]));
-            let walked = bound
-                .iter()
-                .find(|(element, _)| element == read)
-                .map_or_else(
-                    || panic!("`go install` reads ${read}, which no foreach binds"),
-                    |(_, collection)| collection.as_str(),
-                );
-            assert_eq!(
-                walked, held,
-                "`go install` walks ${walked}, and ${held} is what holds .github/go-tools"
-            );
-        }
-    }
-
-    /// The shapes the script readers take, and the ones they refuse. A comment
-    /// and a bare mention are the two that a `contains` check cannot tell from
-    /// a read.
-    #[test]
-    fn the_script_readers_take_the_shapes_they_name() {
-        let pins = [
-            (
-                "$tools = Get-Content .github/go-tools |\n  Where-Object { $_ }",
-                Some("tools"),
-            ),
-            ("$t = Get-Content .github/go-tools", Some("t")),
-            ("# reads .github/go-tools\n$t = @('a@1')", None),
-            ("Write-Output .github/go-tools", None),
-            ("$t = Get-Content .github/other-tools", None),
-            // The path is the word after Get-Content, never anywhere on the
-            // line, so a trailing comment naming the wanted file does not make
-            // a read of another one count as a read of it.
-            (
-                "$t = Get-Content .github/other-tools # .github/go-tools",
-                None,
-            ),
-            (
-                "$t = Get-Content .github/go-tools # still a read",
-                Some("t"),
-            ),
-            ("$t = Get-Content", None),
-            ("", None),
-        ];
-        for (script, expected) in pins {
-            assert_eq!(
-                pin_file_variable(script, ".github/go-tools").as_deref(),
-                expected,
-                "{script:?}"
-            );
-        }
-
-        assert_eq!(
-            foreach_bindings("foreach ($tool in $tools) {"),
-            [("tool".to_string(), "tools".to_string())]
-        );
-        assert!(foreach_bindings("# foreach ($tool in $tools)").is_empty());
-
-        assert_eq!(invocations("go install $tool", "go install"), [["$tool"]]);
-        assert_eq!(
-            invocations("  go install a@1\n# go install b@2", "go install"),
-            [["a@1"]]
-        );
-        assert!(invocations("go installer x", "go install").is_empty());
-
-        assert_eq!(
-            step_outputs("\"list=$($tools -join ',')\" >> $env:GITHUB_OUTPUT"),
-            [("list".to_string(), "$($tools -join ',')".to_string())]
-        );
-        assert!(step_outputs("\"list=a,b\" >> $env:GITHUB_PATH").is_empty());
-
-        let references = [
-            (
-                "${{ steps.pinned-tools.outputs.list }}",
-                Some(("pinned-tools", "list")),
-            ),
-            (
-                "${{steps.pinned-tools.outputs.list}}",
-                Some(("pinned-tools", "list")),
-            ),
-            ("${{ steps.pinned-tools.outputs.list }},extra", None),
-            ("cargo-nextest@0.9.145", None),
-            ("${{ env.TOOLS }}", None),
-            ("${{ steps.pinned-tools.outputs }}", None),
-        ];
-        for (input, expected) in references {
-            assert_eq!(
-                step_output_reference(input)
-                    .as_ref()
-                    .map(|(id, name)| (id.as_str(), name.as_str())),
-                expected,
-                "{input:?}"
-            );
-        }
-    }
-
-    /// The `shellcheck` pin holds one exact release, and the gate's own reader
-    /// is what says so.
-    ///
-    /// Nothing else asserts this. `holds_version` reads the pinned value only
-    /// to keep it out of the workflow, and it answers false for a malformed
-    /// one, so `stable` or `0.11` reaches the gate and is refused there with a
-    /// message blaming the tool for what the pin file got wrong.
-    #[test]
-    fn the_shellcheck_pin_holds_one_exact_release() {
-        let text = read(crate::check::SHELLCHECK_PIN);
-        let pinned = crate::check::pinned_release(&text)
-            .unwrap_or_else(|| panic!("{} names no release", crate::check::SHELLCHECK_PIN));
-        assert!(
-            crate::check::is_release(pinned),
-            "{} holds {pinned:?}, which is not three runs of digits, so the gate would refuse \
-             the installed tool rather than this file",
-            crate::check::SHELLCHECK_PIN
-        );
-    }
-
     /// The shellcheck step names every hook in `.githooks`.
     ///
     /// A command spawns with no shell to expand a glob, so the step names its
@@ -1743,39 +1265,293 @@ mod tests {
         }
     }
 
-    /// The gate names the tool it needs and the workflow installs it, so the
-    /// version has to be the same one in both places. A gate asking for one
-    /// actionlint while continuous integration installs another is a gate whose
-    /// findings nobody can reproduce.
+    /// Every tool the pin file names, as the key and its version.
+    fn pinned_tools() -> Vec<(String, String)> {
+        crate::pins::pinned_tools(&read(crate::pins::PINS))
+            .unwrap_or_else(|problem| panic!("{problem}"))
+    }
+
+    /// The pin files, as the three texts the rules read.
+    fn pin_texts() -> (String, String, String) {
+        (
+            read(crate::pins::PINS),
+            read(crate::pins::LOCK),
+            read(crate::pins::WORKFLOW),
+        )
+    }
+
+    /// The pin files meet every rule the gate holds them to.
     ///
-    /// `cargo_install_package` reads the crates.io half of this. It returns
-    /// nothing for a `go install`, which is why this is a check of its own.
+    /// The gate runs these same rules as its first step, before any tool, so
+    /// this is the same code rather than a second copy of it. What it covers:
+    /// locked mode is on, every version is one exact release, every coordinate
+    /// names a binary, every tool carries a checksum on every platform the
+    /// matrix installs on, the two files agree on each version, and no lockfile
+    /// entry survives a tool the pin file dropped.
     #[test]
-    fn the_pinned_go_tool_file_and_the_gate_name_the_same_versions() {
-        let pinned = pinned_go_tools();
-        assert!(!pinned.is_empty(), "the pinned Go tool file names nothing");
+    fn the_pin_files_meet_every_rule() {
+        let (pins, lock, workflow) = pin_texts();
+        let problems = crate::pins::problems(&pins, &lock, &workflow);
+        assert!(problems.is_empty(), "{problems:?}");
+    }
 
-        let installs: Vec<&str> = crate::check::STEPS
-            .iter()
-            .flat_map(|step| std::iter::once(&step.primary).chain(step.fallback.as_ref()))
-            .map(|run| run.install)
-            .filter(|install| install.starts_with("go install "))
-            .collect();
+    /// The pin file turns mise's locked mode on.
+    ///
+    /// This has a case of its own because it is the whole guarantee and it is
+    /// one line. Without it `mise install` accepts a tool the lockfile does not
+    /// name, and `mise which` answers for a tool this repository pins nowhere
+    /// out of a developer's global configuration, which the gate would then
+    /// run. The action that installs on a runner passes `--locked` itself when
+    /// it sees a lockfile, so continuous integration keeps most of the
+    /// guarantee while a developer's machine loses all of it, and that split is
+    /// what makes the loss quiet.
+    #[test]
+    fn the_pin_file_turns_locked_mode_on() {
+        assert!(
+            crate::pins::locked(&read(crate::pins::PINS)),
+            "{} does not set locked = true",
+            crate::pins::PINS
+        );
+    }
 
-        for entry in &pinned {
-            let wanted = format!("go install {entry}");
+    /// Every coordinate the binary map names is one the pin file still pins.
+    ///
+    /// The map is what lets a coordinate be held against the gate at all, so an
+    /// entry left behind by a removed tool is a mapping nothing exercises.
+    #[test]
+    fn the_binary_map_names_only_coordinates_the_pin_file_pins() {
+        let pinned = pinned_tools();
+        for (key, binary) in crate::pins::COORDINATE_BINARIES {
             assert!(
-                installs.contains(&wanted.as_str()),
-                "no gate step installs {entry}, and the steps that use `go install` are {installs:?}"
+                pinned.iter().any(|(name, _)| name == key),
+                "the binary map names {key} as {binary} and {} does not pin it",
+                crate::pins::PINS
             );
         }
+    }
+
+    /// Every binary the gate resolves is one the pin file names, and every tool
+    /// the pin file names is one the gate resolves.
+    ///
+    /// Set equality rather than a count. A rename on one side and a rename on
+    /// the other leave the count intact while the gate resolves a name nothing
+    /// pins. A pin key is a bare registry name or a backend coordinate, and a
+    /// coordinate names an owner and a repository rather than the binary
+    /// inside, so `pins::COORDINATE_BINARIES` carries that mapping and a rename
+    /// has to touch it.
+    #[test]
+    fn the_pin_file_and_the_gate_name_the_same_binaries() {
+        let mut resolved: BTreeSet<String> = BTreeSet::new();
+        for step in crate::check::STEPS {
+            for step_run in std::iter::once(&step.primary).chain(step.fallback.as_ref()) {
+                if step_run.mise {
+                    resolved.insert(step_run.command[0].to_string());
+                }
+                // A tool filled into a flag is resolved through mise like any
+                // other, and no step's own command names it.
+                if let Some(target) = step_run.resolved {
+                    resolved.insert(target.tool.to_string());
+                }
+            }
+        }
+        assert!(!resolved.is_empty(), "no gate step resolves through mise");
+
+        let pinned = crate::pins::pinned_binaries(&read(crate::pins::PINS))
+            .unwrap_or_else(|problem| panic!("{problem}"));
         assert_eq!(
-            installs.len(),
-            pinned.len(),
-            "the gate has {} `go install` steps and the pinned file names {}",
-            installs.len(),
-            pinned.len()
+            resolved,
+            pinned,
+            "the gate resolves {resolved:?} and {} names {pinned:?}",
+            crate::pins::PINS
         );
+    }
+
+    /// The gate job installs through mise, which reads the pin file itself, and
+    /// no workflow writes a version of its own.
+    ///
+    /// Four shapes, each a way a workflow installs something other than what
+    /// the pin file holds. A release written into a workflow is a second copy
+    /// the next bump leaves behind. A `mise_toml` or `tool_versions` input
+    /// makes the action write its own pin file over the committed one, so the
+    /// rules above would check a file no install reads. A `sha256` input
+    /// returns before the action compares its mise download against the
+    /// minisign-signed `SHASUMS256.txt`, which trades a signature for a hash
+    /// somebody typed. A release that is not exact resolves at run time, and a
+    /// release resolved at run time is under no cooldown.
+    ///
+    /// Every job is walked rather than the gate job alone, so a second install
+    /// step added elsewhere is held to the same rules.
+    #[test]
+    fn every_mise_install_reads_the_pin_file_and_writes_no_version() {
+        let workflow = yaml(crate::pins::WORKFLOW);
+        let jobs = workflow["jobs"]
+            .as_hash()
+            .expect("the workflow declares jobs");
+
+        let mut installs = 0;
+        for (_, job) in jobs {
+            for step in job["steps"].as_vec().unwrap_or(&Vec::new()) {
+                if !step["uses"]
+                    .as_str()
+                    .is_some_and(|uses| uses.starts_with("jdx/mise-action@"))
+                {
+                    continue;
+                }
+                installs += 1;
+                for input in ["mise_toml", "tool_versions"] {
+                    assert!(
+                        step["with"][input].is_badvalue(),
+                        "mise-action takes {input}, which writes over the committed {}",
+                        crate::pins::PINS
+                    );
+                }
+                assert!(
+                    step["with"]["sha256"].is_badvalue(),
+                    "mise-action takes a sha256, which skips the signed checksum file it would \
+                     otherwise verify mise against"
+                );
+                assert_ne!(
+                    step["with"]["install"].as_bool(),
+                    Some(false),
+                    "mise-action installs nothing, so the gate resolves tools that are not there"
+                );
+                let release = step["with"]["version"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| step["with"]["version"].as_f64().map(|n| n.to_string()))
+                    .expect("mise-action takes an exact mise release");
+                assert!(
+                    is_exact_release(&release),
+                    "mise-action takes {release:?} as version, which is not one exact release"
+                );
+            }
+        }
+        assert!(installs > 0, "no job installs through mise-action");
+
+        let text = read(crate::pins::WORKFLOW);
+        for (tool, version) in pinned_tools() {
+            assert!(
+                !holds_version(&text, &version),
+                "the workflow carries its own copy of the release {} pins for {tool}",
+                crate::pins::PINS
+            );
+        }
+    }
+
+    /// A pin file every rule accepts, for the cases below to change one thing in.
+    const SOUND_PINS: &str = concat!(
+        "[tools]\n",
+        "taplo = \"0.10.0\"\n",
+        "\"github:nextest-rs/nextest\" = { version = \"0.9.145\" }\n",
+        "\"github:bnjbvr/cargo-machete\" = \"0.9.2\"\n",
+        "\"github:rustsec/rustsec\" = \"0.22.2\"\n",
+        "\n[settings]\nlocked = true\n",
+    );
+    const SOUND_LOCK: &str = concat!(
+        "[[tools.taplo]]\nversion = \"0.10.0\"\n",
+        "[tools.taplo.\"platforms.linux-x64\"]\nchecksum = \"sha256:aa\"\n",
+        "[tools.taplo.\"platforms.windows-x64\"]\nchecksum = \"sha256:bb\"\n",
+        "[[tools.\"github:nextest-rs/nextest\"]]\nversion = \"0.9.145\"\n",
+        "[tools.\"github:nextest-rs/nextest\".\"platforms.linux-x64\"]\nchecksum = \"sha256:cc\"\n",
+        "[tools.\"github:nextest-rs/nextest\".\"platforms.windows-x64\"]\nchecksum = \"sha256:dd\"\n",
+        "[[tools.\"github:bnjbvr/cargo-machete\"]]\nversion = \"0.9.2\"\n",
+        "[tools.\"github:bnjbvr/cargo-machete\".\"platforms.linux-x64\"]\nchecksum = \"sha256:ee\"\n",
+        "[tools.\"github:bnjbvr/cargo-machete\".\"platforms.windows-x64\"]\nchecksum = \"sha256:ff\"\n",
+        "[[tools.\"github:rustsec/rustsec\"]]\nversion = \"0.22.2\"\n",
+        "[tools.\"github:rustsec/rustsec\".\"platforms.linux-x64\"]\nchecksum = \"sha256:01\"\n",
+        "[tools.\"github:rustsec/rustsec\".\"platforms.windows-x64\"]\nchecksum = \"sha256:02\"\n",
+    );
+    const SOUND_WORKFLOW: &str = "        os: [windows-latest, ubuntu-latest]\n";
+
+    /// The rules refuse each shape they name, against documents written here.
+    ///
+    /// A rule nothing can break is a rule that proves nothing, so every case is
+    /// the sound trio with one thing changed, and the sound trio sits beside
+    /// them as the control.
+    #[test]
+    fn the_pin_rules_refuse_the_shapes_they_name() {
+        assert_eq!(
+            crate::pins::problems(SOUND_PINS, SOUND_LOCK, SOUND_WORKFLOW),
+            Vec::<String>::new(),
+            "the sound documents are refused, so every case below proves nothing"
+        );
+
+        let cases: &[(&str, String, String, String, &str)] = &[
+            (
+                "locked mode off",
+                SOUND_PINS.replace("locked = true", "locked = false"),
+                SOUND_LOCK.to_string(),
+                SOUND_WORKFLOW.to_string(),
+                "does not set locked = true",
+            ),
+            (
+                "the locked line deleted",
+                SOUND_PINS.replace("\n[settings]\nlocked = true\n", ""),
+                SOUND_LOCK.to_string(),
+                SOUND_WORKFLOW.to_string(),
+                "does not set locked = true",
+            ),
+            (
+                "a checksum dropped, the platform block kept",
+                SOUND_PINS.to_string(),
+                SOUND_LOCK.replace("checksum = \"sha256:bb\"\n", ""),
+                SOUND_WORKFLOW.to_string(),
+                "taplo on windows-x64 carries no checksum",
+            ),
+            (
+                "a platform block dropped",
+                SOUND_PINS.to_string(),
+                SOUND_LOCK.replace(
+                    "[tools.taplo.\"platforms.linux-x64\"]\nchecksum = \"sha256:aa\"\n",
+                    "",
+                ),
+                SOUND_WORKFLOW.to_string(),
+                "taplo records no linux-x64 entry",
+            ),
+            (
+                "the two files disagreeing on a version",
+                SOUND_PINS.replace("taplo = \"0.10.0\"", "taplo = \"0.10.1\""),
+                SOUND_LOCK.to_string(),
+                SOUND_WORKFLOW.to_string(),
+                "pins taplo 0.10.1 and mise.lock records 0.10.0",
+            ),
+            (
+                "a range in place of an exact release",
+                SOUND_PINS.replace("taplo = \"0.10.0\"", "taplo = \"0.10\""),
+                SOUND_LOCK.to_string(),
+                SOUND_WORKFLOW.to_string(),
+                "which is not one exact release",
+            ),
+            (
+                "a lockfile entry the pin file no longer names",
+                SOUND_PINS.replace("taplo = \"0.10.0\"\n", ""),
+                SOUND_LOCK.to_string(),
+                SOUND_WORKFLOW.to_string(),
+                "locks taplo, which mise.toml no longer pins",
+            ),
+            (
+                "a runner leg with no platform",
+                SOUND_PINS.to_string(),
+                SOUND_LOCK.to_string(),
+                SOUND_WORKFLOW.replace("ubuntu-latest", "macos-latest"),
+                "macos-latest has no mise platform",
+            ),
+            (
+                "a coordinate naming no binary",
+                SOUND_PINS.replace("github:rustsec/rustsec", "github:rustsec/elsewhere"),
+                SOUND_LOCK.replace("github:rustsec/rustsec", "github:rustsec/elsewhere"),
+                SOUND_WORKFLOW.to_string(),
+                "is a coordinate no entry names a binary for",
+            ),
+        ];
+
+        for (what, pins, lock, workflow, wanted) in cases {
+            let found = crate::pins::problems(pins, lock, workflow);
+            assert!(
+                found.iter().any(|problem| problem.contains(wanted)),
+                "{what}: nothing said {wanted:?}, got {found:?}"
+            );
+        }
     }
 
     /// `.github/commit-scopes.json` is the scope vocabulary. `cargo xtask
@@ -1913,8 +1689,8 @@ mod tests {
 
     /// A count of gate steps or pinned tools in prose goes stale the next time
     /// a step or a tool is added, and nothing else notices. The authoritative
-    /// lists are `cargo xtask check`, `.github/cargo-tools` and
-    /// `.github/go-tools`, and prose names those rather than counting them.
+    /// lists are `cargo xtask check` and `mise.toml`, and prose names those
+    /// rather than counting them.
     ///
     /// Markdown and the issue forms are read whole, code blocks included, and
     /// code, configuration and the workflows contribute their comments, and a
@@ -2123,44 +1899,6 @@ mod tests {
         assert!(!members.is_empty(), "the workspace lists no members");
         members
     }
-
-    /// The pinned tools, as `(name, version)`.
-    fn pinned_tools() -> Vec<(String, String)> {
-        read(".github/cargo-tools")
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(|line| {
-                let (name, version) = line
-                    .split_once('@')
-                    .unwrap_or_else(|| panic!("{line:?} is not name@version"));
-                assert!(!version.is_empty(), "{line:?} has no version");
-                (name.to_string(), version.to_string())
-            })
-            .collect()
-    }
-
-    /// The pinned Go tools, each as the whole `module/path@version` entry.
-    ///
-    /// The path is kept whole because that is what `go install` takes and what
-    /// the gate's install command carries, so comparing the two needs no
-    /// reassembly.
-    fn pinned_go_tools() -> Vec<String> {
-        read(".github/go-tools")
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(|line| {
-                let (path, version) = line
-                    .split_once('@')
-                    .unwrap_or_else(|| panic!("{line:?} is not module@version"));
-                assert!(!version.is_empty(), "{line:?} has no version");
-                assert!(!path.is_empty(), "{line:?} has no module path");
-                line.to_string()
-            })
-            .collect()
-    }
-
     /// Reading the Steam library is allowed, and is what a schema extract
     /// against the client does. Writing into it is what never happens.
     #[test]
@@ -2449,33 +2187,20 @@ unix-taken.workspace = true
         pins.push(("rust-toolchain.toml", minor));
 
         for (_, version) in pinned_tools() {
-            pins.push((".github/cargo-tools", version));
-        }
-        for entry in pinned_go_tools() {
-            let (_, version) = entry.split_once('@').expect("module@version");
-            pins.push((
-                ".github/go-tools",
-                version.trim_start_matches('v').to_string(),
-            ));
+            pins.push((crate::pins::PINS, version));
         }
         pins.push((".bun-version", read(".bun-version").trim().to_string()));
-
-        let shellcheck = read(crate::check::SHELLCHECK_PIN);
-        pins.push((
-            crate::check::SHELLCHECK_PIN,
-            crate::check::pinned_release(&shellcheck)
-                .expect("the ShellCheck pin file holds a release")
-                .to_string(),
-        ));
 
         let workflow = yaml(".github/workflows/ci.yml");
         let mut values: Vec<(Vec<String>, Yaml)> = Vec::new();
         keyed_values(&workflow, &[], &mut values);
         for (path, value) in values {
-            if path.last().is_some_and(|key| key == "go-version") {
+            // mise's own release is pinned where the action that installs it
+            // is named, because mise cannot install itself.
+            if path.last().is_some_and(|key| key == "version") {
                 let version = match value {
                     Yaml::Real(text) | Yaml::String(text) => text,
-                    other => panic!("go-version holds {other:?}"),
+                    other => panic!("a workflow version input holds {other:?}"),
                 };
                 pins.push((".github/workflows/ci.yml", version));
             }
@@ -2485,11 +2210,11 @@ unix-taken.workspace = true
 
     /// A version restated outside the file that pins it is a copy the next
     /// bump leaves behind. Every pin is read from its file: the toolchain
-    /// channel and its minor release, each `.github/cargo-tools` and
-    /// `.github/go-tools` entry, `.bun-version`, and the Go release the gate
-    /// job's setup-go step takes. None of them may appear in prose, which is
-    /// what the count check reads: every Markdown file and issue form whole,
-    /// and the comments of code, configuration and workflows.
+    /// channel and its minor release, each `mise.toml` entry, `.bun-version`,
+    /// and the mise release the gate job's install step takes. None of them may
+    /// appear in prose, which is what the count check reads: every Markdown
+    /// file and issue form whole, and the comments of code, configuration and
+    /// workflows.
     ///
     /// What passes: a version in a value, such as the pins themselves,
     /// `rust-version` in `Cargo.toml` and every lockfile; an action's version
@@ -2501,11 +2226,9 @@ unix-taken.workspace = true
         let pins = pinned_versions();
         for source in [
             "rust-toolchain.toml",
-            ".github/cargo-tools",
-            ".github/go-tools",
+            crate::pins::PINS,
             ".bun-version",
             ".github/workflows/ci.yml",
-            crate::check::SHELLCHECK_PIN,
         ] {
             assert!(
                 pins.iter().any(|(from, _)| *from == source),

@@ -20,33 +20,31 @@ resolve.
 
 `rust-toolchain.toml` pins the Rust release, and rustup installs it on the first
 cargo command. A C toolchain is needed for MinHook, the hook engine Ember uses;
-on Windows that is Visual Studio Build Tools.
-
-The gate calls tools that rustup does not install. `.github/cargo-tools` pins
-the crates.io packages among them, `.github/go-tools` pins the Go programs,
-which need [Go](https://go.dev) to install, and `.github/shellcheck-version`
-pins [ShellCheck](https://www.shellcheck.net), which is neither. The versions
-live in those files and nowhere else, so this installs what continuous
-integration installs:
-
-```powershell
-cargo install --locked @(Get-Content .github/cargo-tools | Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() })
-Get-Content .github/go-tools | Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() } | ForEach-Object { go install $_ }
-```
-
-On a shell without PowerShell:
+on Windows that is Visual Studio Build Tools. The gate calls tools that rustup,
+cargo and bun do not provide. [mise](https://mise.jdx.dev) installs every one of
+them. `mise.toml` pins a version per tool and `mise.lock` records a checksum per
+platform, so an install takes the recorded artifact or fails. Install mise,
+then:
 
 ```sh
-cargo install --locked $(grep -v '^#' .github/cargo-tools | grep .)
-grep -v '^#' .github/go-tools | grep . | xargs -n 1 go install
+mise install
 ```
 
-No one command installs ShellCheck on every host, so it comes from whatever that
-host uses: `winget install koalaman.shellcheck` on Windows,
-`apt install shellcheck` or `brew install shellcheck` elsewhere, or the archive
-from [its releases](https://github.com/koalaman/shellcheck/releases). The gate
-refuses any release but the one `.github/shellcheck-version` holds, and names
-both when they disagree, so the route does not matter and the release does.
+Nothing from that lands on `PATH`. The gate asks `mise which` for each binary
+and runs the path it gives back, so the binary it checked is the binary it ran.
+Turning on `mise activate` in a shell puts the same binaries on `PATH` under
+their own names, which is what makes `cargo nextest run` and its siblings work
+at a prompt. The split is deliberate: a check runs the binary it resolved, and a
+person gets the convenience.
+
+`taplo` is the one tool whose checksum does not come from its publisher. GitHub
+began recording a digest for release assets after the taplo release `mise.toml`
+pins was published, so its hashes were computed here and committed. They say the
+bytes came from that release URL and that every install since has to match them,
+which is narrower than a digest the publisher recorded and is not provenance.
+Bumping taplo writes a lockfile entry with no checksum at all, which the gate's
+own tests refuse, so whoever bumps it computes and commits the new hashes. A
+relock at the same version keeps them, so only a bump drops them.
 
 [Bun](https://bun.sh) runs the repository's own tooling, at the release
 `.bun-version` pins. Install the hooks and the markup formatter with one

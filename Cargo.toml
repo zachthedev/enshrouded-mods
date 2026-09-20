@@ -29,12 +29,10 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
+# A TOML parser. The gate reads mise.toml for the version a tool is pinned to,
+# and the tests read the manifests and the lockfile beside it.
 toml = "1.1.6"
 tracing = "0.1.44"
-# Resolves a program name on PATH the way the standard library spawner does.
-# The gate hands the resolved path to actionlint, so the binary it checked and
-# the binary actionlint analyzes with are the same one by construction.
-which = "8.0.6"
 # A YAML parser, for the tests that read the Dependabot, zizmor and workflow
 # configuration. They read UTF-8 text, so the encoding detection stays out.
 yaml-rust2 = { version = "0.13.0", default-features = false }

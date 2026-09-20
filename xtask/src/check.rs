@@ -9,14 +9,12 @@ use std::io::{self, Write};
 
 use owo_colors::{OwoColorize, Stream};
 
+use crate::pins::{self, pinned_version};
 use crate::runner::{Exit, Runner};
 
 // ///////////////////////////////////////////////
 // The step table
 // ///////////////////////////////////////////////
-
-/// The file holding the one `shellcheck` release the gate accepts.
-pub const SHELLCHECK_PIN: &str = ".github/shellcheck-version";
 
 /// How the gate tells whether a tool is installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,18 +26,14 @@ pub enum Probe {
     /// repository root. This is the shape for a tool that would fetch itself
     /// from a registry when asked to run.
     File(&'static str),
-    /// A command whose output has to carry the release a pin file holds. This
-    /// is the shape for a tool another tool picks up from `PATH` by itself,
-    /// where a different release changes which findings the gate reports while
-    /// every step still passes.
-    Version {
-        /// The command that prints the release. The first element is the
-        /// program.
-        command: &'static [&'static str],
-        /// The file holding the one release that output may carry, relative to
-        /// the repository root.
-        pin: &'static str,
-    },
+    /// A command whose output has to carry the version [`pins::PINS`] holds for the
+    /// program that printed it. The first element is the program, and its name
+    /// is the key read from [`pins::PINS`], so the checked release and the pinned one
+    /// cannot disagree.
+    ///
+    /// This is the shape for a tool a second tool reads findings from, where a
+    /// different release changes those findings while every step still passes.
+    Version(&'static [&'static str]),
 }
 
 /// A last argument the gate fills in with a tool's resolved path.
@@ -60,6 +54,13 @@ pub struct Resolved {
 pub struct Run {
     /// The tool's name, printed when it is missing.
     pub tool: &'static str,
+    /// Whether mise installs `command[0]`, under the name `command[0]` spells.
+    ///
+    /// The gate resolves such a program once through `mise which` and runs the
+    /// path it gives back, probe included, so the binary the probe answered and
+    /// the binary the step ran are the same one. A program the toolchain or the
+    /// package manager provides is not one of these and runs by name.
+    pub mise: bool,
     /// How to tell the tool is installed.
     pub probe: Probe,
     /// The command itself. `command[0]` is the program.
@@ -88,6 +89,7 @@ pub const STEPS: &[Step] = &[
         name: "fmt",
         primary: Run {
             tool: "rustfmt",
+            mise: false,
             probe: Probe::Command(&["cargo", "fmt", "--version"]),
             command: &["cargo", "fmt", "--check"],
             resolved: None,
@@ -98,13 +100,14 @@ pub const STEPS: &[Step] = &[
     Step {
         name: "taplo",
         primary: Run {
-            tool: "taplo-cli",
+            tool: "taplo",
+            mise: true,
             probe: Probe::Command(&["taplo", "--version"]),
             // The files and the exclusions are in .taplo.toml, so the same set
             // is formatted whether the gate or an editor runs the tool.
             command: &["taplo", "fmt", "--check"],
             resolved: None,
-            install: "cargo install taplo-cli --locked",
+            install: MISE_INSTALL,
         },
         fallback: None,
     },
@@ -112,6 +115,7 @@ pub const STEPS: &[Step] = &[
         name: "clippy",
         primary: Run {
             tool: "clippy",
+            mise: false,
             probe: Probe::Command(&["cargo", "clippy", "--version"]),
             command: &[
                 "cargo",
@@ -131,13 +135,19 @@ pub const STEPS: &[Step] = &[
         name: "tests",
         primary: Run {
             tool: "cargo-nextest",
-            probe: Probe::Command(&["cargo", "nextest", "--version"]),
-            command: &["cargo", "nextest", "run", "--workspace"],
+            mise: true,
+            // The binary takes its own subcommand name as its first argument,
+            // which is the convention cargo's dispatch supplies when the tool
+            // runs as `cargo nextest`. The gate names the path, so it supplies
+            // the argument itself.
+            probe: Probe::Command(&["cargo-nextest", "nextest", "--version"]),
+            command: &["cargo-nextest", "nextest", "run", "--workspace"],
             resolved: None,
-            install: "cargo install cargo-nextest --locked",
+            install: MISE_INSTALL,
         },
         fallback: Some(Run {
             tool: "cargo test",
+            mise: false,
             probe: Probe::Command(&["cargo", "--version"]),
             command: &["cargo", "test", "--workspace"],
             resolved: None,
@@ -148,6 +158,7 @@ pub const STEPS: &[Step] = &[
         name: "doctests",
         primary: Run {
             tool: "cargo test",
+            mise: false,
             probe: Probe::Command(&["cargo", "--version"]),
             // cargo-nextest runs no doctests, so the tests step above leaves
             // every documented example unbuilt. This step runs unconditionally,
@@ -164,10 +175,13 @@ pub const STEPS: &[Step] = &[
         name: "deny",
         primary: Run {
             tool: "cargo-deny",
-            probe: Probe::Command(&["cargo", "deny", "--version"]),
-            command: &["cargo", "deny", "check"],
+            mise: true,
+            // This binary takes its subcommand straight, with no repeat of its
+            // own name, unlike cargo-nextest and cargo-audit.
+            probe: Probe::Command(&["cargo-deny", "--version"]),
+            command: &["cargo-deny", "check"],
             resolved: None,
-            install: "cargo install cargo-deny --locked",
+            install: MISE_INSTALL,
         },
         fallback: None,
     },
@@ -175,12 +189,14 @@ pub const STEPS: &[Step] = &[
         name: "machete",
         primary: Run {
             tool: "cargo-machete",
-            probe: Probe::Command(&["cargo", "machete", "--version"]),
+            mise: true,
+            // This binary takes paths straight and has no subcommand at all.
+            probe: Probe::Command(&["cargo-machete", "--version"]),
             // Named directories, because vendor/ holds Ember's own workspace
             // and its manifests are checked by Ember's own gate.
-            command: &["cargo", "machete", "crates", "mods", "xtask"],
+            command: &["cargo-machete", "crates", "mods", "xtask"],
             resolved: None,
-            install: "cargo install cargo-machete --locked",
+            install: MISE_INSTALL,
         },
         fallback: None,
     },
@@ -188,10 +204,13 @@ pub const STEPS: &[Step] = &[
         name: "audit",
         primary: Run {
             tool: "cargo-audit",
-            probe: Probe::Command(&["cargo", "audit", "--version"]),
-            command: &["cargo", "audit"],
+            mise: true,
+            // This binary takes its own subcommand name first, the way
+            // cargo-nextest does.
+            probe: Probe::Command(&["cargo-audit", "--version"]),
+            command: &["cargo-audit", "audit"],
             resolved: None,
-            install: "cargo install cargo-audit --locked",
+            install: MISE_INSTALL,
         },
         fallback: None,
     },
@@ -199,6 +218,7 @@ pub const STEPS: &[Step] = &[
         name: "prettier",
         primary: Run {
             tool: "prettier",
+            mise: false,
             // The installed package, not a binary on PATH: bunx fetches from
             // npm when a package is absent locally, which bypasses the
             // lockfile, so the probe has to see the pinned copy itself.
@@ -223,16 +243,14 @@ pub const STEPS: &[Step] = &[
         name: "shellcheck",
         primary: Run {
             tool: "shellcheck",
-            // The release, not the presence. actionlint picks shellcheck up
-            // from PATH by itself, so a host carrying a different release
-            // reports different findings while every step still passes. This
-            // step runs before actionlint, and the gate stops at the first step
-            // that does not pass, so actionlint is never reached on a host the
-            // pin does not cover.
-            probe: Probe::Version {
-                command: &["shellcheck", "--version"],
-                pin: SHELLCHECK_PIN,
-            },
+            mise: true,
+            // The release, not the presence. A stale install directory answers
+            // under the name mise resolves while carrying another release, and
+            // a different release changes which findings actionlint reports
+            // while every step still passes. This step runs before actionlint,
+            // and the gate stops at the first step that does not pass, so
+            // actionlint is never reached on a host the pin does not cover.
+            probe: Probe::Version(&["shellcheck", "--version"]),
             // The git hooks are the POSIX shell this repository owns outside a
             // workflow. actionlint reaches a `run:` block only where it
             // resolves the shell to sh or bash, which no block in the gate job
@@ -241,8 +259,7 @@ pub const STEPS: &[Step] = &[
             // command spawns with no shell to expand a glob.
             command: &["shellcheck", ".githooks/commit-msg", ".githooks/pre-push"],
             resolved: None,
-            install: "the release .github/shellcheck-version pins, from \
-                      https://github.com/koalaman/shellcheck/releases",
+            install: MISE_INSTALL,
         },
         fallback: None,
     },
@@ -250,6 +267,7 @@ pub const STEPS: &[Step] = &[
         name: "actionlint",
         primary: Run {
             tool: "actionlint",
+            mise: true,
             probe: Probe::Command(&["actionlint", "-version"]),
             // No path argument. actionlint resolves the enclosing git
             // repository and reads its `.github/workflows`, which leaves
@@ -276,11 +294,7 @@ pub const STEPS: &[Step] = &[
                 flag: "-shellcheck=",
                 tool: "shellcheck",
             }),
-            // The version is here and in .github/go-tools, and a test asserts
-            // the two agree. actionlint is on neither crates.io nor
-            // taiki-e/install-action, so it cannot sit in .github/cargo-tools
-            // beside the rest.
-            install: "go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12",
+            install: MISE_INSTALL,
         },
         fallback: None,
     },
@@ -288,6 +302,7 @@ pub const STEPS: &[Step] = &[
         name: "zizmor",
         primary: Run {
             tool: "zizmor",
+            mise: true,
             probe: Probe::Command(&["zizmor", "--version"]),
             // Named paths, because Ember's checkout under vendor/ carries
             // workflows of its own and Ember's gate covers them.
@@ -312,11 +327,17 @@ pub const STEPS: &[Step] = &[
                 ".github/dependabot.yml",
             ],
             resolved: None,
-            install: "cargo install zizmor --locked",
+            install: MISE_INSTALL,
         },
         fallback: None,
     },
 ];
+
+/// What to run when a tool mise owns is absent.
+///
+/// One command covers every one of them, because [`pins::PINS`] names them all and
+/// mise reads it.
+const MISE_INSTALL: &str = "mise install";
 
 // ///////////////////////////////////////////////
 // Results
@@ -394,14 +415,6 @@ enum Found {
     Wrong(String),
 }
 
-/// The release a pin file holds: its first line that is neither blank nor a
-/// comment.
-pub fn pinned_release(text: &str) -> Option<&str> {
-    text.lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with('#'))
-}
-
 /// The first release `text` carries, as three runs of digits separated by dots.
 ///
 /// The shape locates it rather than a label, because the words a tool prints
@@ -464,24 +477,109 @@ impl<'a> Gate<'a> {
     /// Returns the error from writing to `out`.
     pub fn run(&self, out: &mut dyn Write) -> io::Result<Vec<Row>> {
         writeln!(out, "check")?;
-        let mut rows = Vec::with_capacity(self.steps.len());
-        for step in self.steps {
-            let row = self.run_step(step, out)?;
-            let stop = !row.passed();
-            rows.push(row);
-            if stop {
-                break;
+        let mut rows = Vec::with_capacity(self.steps.len() + 1);
+        let first = self.pin_row(out)?;
+        let mut stop = !first.passed();
+        rows.push(first);
+        if !stop {
+            for step in self.steps {
+                let row = self.run_step(step, out)?;
+                stop = !row.passed();
+                rows.push(row);
+                if stop {
+                    break;
+                }
             }
         }
         summarize(out, &rows)?;
         Ok(rows)
     }
 
-    /// Ask `run`'s probe what it finds.
-    fn found(&self, run: &Run) -> Found {
+    /// Hold the pin files to their rules and print every problem.
+    ///
+    /// Returns true when a problem was found, which is what the `pins`
+    /// subcommand exits on.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from writing to `out`.
+    pub fn pins(&self, out: &mut dyn Write) -> io::Result<bool> {
+        let problems = self.pin_problems();
+        for problem in &problems {
+            writeln!(out, "  {problem}")?;
+        }
+        Ok(!problems.is_empty())
+    }
+
+    /// Every way the pin files fall short, with an unreadable file reported as
+    /// a problem of its own.
+    fn pin_problems(&self) -> Vec<String> {
+        let read = |path: &str| {
+            self.runner
+                .read_file(path)
+                .ok_or_else(|| format!("{path} cannot be read"))
+        };
+        match (read(pins::PINS), read(pins::LOCK), read(pins::WORKFLOW)) {
+            (Ok(pin_text), Ok(lock), Ok(workflow)) => pins::problems(&pin_text, &lock, &workflow),
+            (first, second, third) => [first, second, third]
+                .into_iter()
+                .filter_map(Result::err)
+                .collect(),
+        }
+    }
+
+    /// The row for the pin rules, which run before any tool does.
+    ///
+    /// A lockfile entry carrying a url and no checksum installs whatever that
+    /// url serves, so a rule that ran after the tools would report a finding
+    /// about a binary that had already executed.
+    fn pin_row(&self, out: &mut dyn Write) -> io::Result<Row> {
+        let problems = self.pin_problems();
+        let outcome = if problems.is_empty() {
+            Outcome::Passed
+        } else {
+            for problem in &problems {
+                writeln!(out, "  {problem}")?;
+            }
+            Outcome::Failed
+        };
+        Ok(Row {
+            step: "pins",
+            tool: pins::PINS,
+            install: pins::RELOCK,
+            outcome,
+            command: String::new(),
+            fell_back: false,
+        })
+    }
+
+    /// The program `run` executes: the path mise gives for a tool it owns, or
+    /// the name itself for a program the toolchain provides.
+    ///
+    /// `None` when mise owns the tool and resolves nothing, which is how an
+    /// uninstalled tool reads.
+    fn program(&self, run: &Run) -> Option<String> {
+        if !run.mise {
+            return Some(run.command[0].to_string());
+        }
+        self.runner
+            .resolve(run.command[0])
+            .map(|path| path.display().to_string())
+    }
+
+    /// Ask `run`'s probe what it finds, with `program` standing in for the name
+    /// its command spells.
+    fn found(&self, run: &Run, program: &str) -> Found {
+        let at = |command: &[&'static str]| {
+            let mut argv: Vec<String> = command.iter().map(|word| (*word).to_string()).collect();
+            argv[0] = program.to_string();
+            argv
+        };
         match run.probe {
             Probe::Command(command) => {
-                if self.runner.capture(command).is_some() {
+                let argv = at(command);
+                let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+                if self.runner.capture(&borrowed).is_some() {
                     Found::Yes
                 } else {
                     Found::No
@@ -494,30 +592,39 @@ impl<'a> Gate<'a> {
                     Found::No
                 }
             }
-            Probe::Version { command, pin } => self.at_the_pin(run.tool, command, pin),
+            Probe::Version(command) => {
+                let argv = at(command);
+                let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+                self.at_the_pin(run.tool, command[0], &borrowed)
+            }
         }
     }
 
-    /// Hold what `command` prints against the release `pin` holds.
+    /// Hold what `command` prints against the version [`pins::PINS`] holds for
+    /// `name`.
     ///
     /// An unreadable pin file is a mismatch rather than an absent tool, because
     /// a gate that cannot say which release it wants has nothing to check.
-    fn at_the_pin(&self, tool: &str, command: &[&str], pin: &str) -> Found {
-        let Some(text) = self.runner.read_file(pin) else {
+    fn at_the_pin(&self, tool: &str, name: &str, command: &[&str]) -> Found {
+        let Some(text) = self.runner.read_file(pins::PINS) else {
             return Found::Wrong(format!(
-                "{pin} cannot be read, so nothing says which {tool}"
+                "{} cannot be read, so nothing says which {tool}",
+                pins::PINS
             ));
         };
-        let Some(wanted) = pinned_release(&text) else {
-            return Found::Wrong(format!("{pin} names no release"));
+        let Some(wanted) = pinned_version(&text, name) else {
+            return Found::Wrong(format!("{} pins no version for {name}", pins::PINS));
         };
         let Some(printed) = self.runner.capture(command) else {
             return Found::No;
         };
         match reported_release(&printed) {
             Some(got) if got == wanted => Found::Yes,
-            Some(got) => Found::Wrong(format!("{tool} is {got} and {pin} pins {wanted}")),
-            None => Found::Wrong(format!("{tool} printed no release to hold against {pin}")),
+            Some(got) => Found::Wrong(format!("{tool} is {got} and {} pins {wanted}", pins::PINS)),
+            None => Found::Wrong(format!(
+                "{tool} printed no release to hold against {}",
+                pins::PINS
+            )),
         }
     }
 
@@ -531,20 +638,28 @@ impl<'a> Gate<'a> {
             command: String::new(),
             fell_back: false,
         };
-        let (chosen, fell_back) = match self.found(&step.primary) {
-            Found::Yes => (&step.primary, false),
-            Found::Wrong(why) => return Ok(unrun(Outcome::Mismatched(why))),
-            Found::No => match &step.fallback {
-                Some(fallback) if matches!(self.found(fallback), Found::Yes) => (fallback, true),
-                _ => return Ok(unrun(Outcome::Missing)),
+        let ask = |run: &Run| match self.program(run) {
+            Some(program) => (self.found(run, &program), program),
+            None => (Found::No, String::new()),
+        };
+        let (chosen, program, fell_back) = match ask(&step.primary) {
+            (Found::Yes, program) => (&step.primary, program, false),
+            (Found::Wrong(why), _) => return Ok(unrun(Outcome::Mismatched(why))),
+            (Found::No, _) => match &step.fallback {
+                Some(fallback) => match ask(fallback) {
+                    (Found::Yes, program) => (fallback, program, true),
+                    _ => return Ok(unrun(Outcome::Missing)),
+                },
+                None => return Ok(unrun(Outcome::Missing)),
             },
         };
 
         let mut argv: Vec<String> = chosen.command.iter().map(|a| (*a).to_string()).collect();
+        argv[0] = program;
         if let Some(resolved) = chosen.resolved {
             let Some(path) = self.runner.resolve(resolved.tool) else {
                 return Ok(unrun(Outcome::Mismatched(format!(
-                    "{} is not on PATH, so {} would look it up itself",
+                    "mise resolves no {}, so {} would look it up itself",
                     resolved.tool, chosen.tool
                 ))));
             };
@@ -624,11 +739,14 @@ fn summarize(out: &mut dyn Write, rows: &[Row]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::fmt::Write as _;
     use std::path::PathBuf;
 
+    use crate::pins;
+
     use super::{
-        Gate, Outcome, Probe, Resolved, Row, Run, SHELLCHECK_PIN, STEPS, Step, is_release,
-        pinned_release, reported_release,
+        Gate, MISE_INSTALL, Outcome, Probe, Resolved, Row, Run, STEPS, Step, is_release,
+        pinned_version, reported_release,
     };
     use crate::runner::{Exit, Runner};
 
@@ -637,12 +755,25 @@ mod tests {
     /// lives in the real pin file, which no test here reads.
     const FAKE_RELEASE: &str = "9.9.9";
 
-    /// The directory `FakeRunner` claims every tool resolves into.
+    /// The directory `FakeRunner` claims every mise tool resolves into.
     const FAKE_BIN: &str = "/fake/bin";
+
+    /// The line the gate builds from `command`, with a mise tool's program
+    /// replaced by the path mise resolves for it.
+    ///
+    /// Every case keys on this rather than on the declared name, so a step that
+    /// stopped running the resolved path stops matching.
+    fn as_run(run: &Run, command: &[&str]) -> String {
+        let mut argv: Vec<String> = command.iter().map(|word| (*word).to_string()).collect();
+        if run.mise {
+            argv[0] = format!("{FAKE_BIN}/{}", run.command[0]);
+        }
+        argv.join(" ")
+    }
 
     /// A `Runner` that spawns nothing and records what it was asked to run.
     struct FakeRunner {
-        /// Tools that resolve nowhere on `PATH`.
+        /// Tools mise resolves nowhere.
         unresolvable: Vec<String>,
         /// Probe commands that answer, each as one joined string.
         installed: Vec<String>,
@@ -661,24 +792,57 @@ mod tests {
         /// Build a runner where every tool answers at its pinned release and
         /// every command passes.
         fn all_installed() -> Self {
-            let probes = STEPS.iter().flat_map(|step| {
-                std::iter::once(step.primary.probe)
-                    .chain(step.fallback.as_ref().map(|run| run.probe))
-            });
             let mut installed = Vec::new();
             let mut printed = Vec::new();
             let mut present = Vec::new();
-            for probe in probes {
-                match probe {
-                    Probe::Command(command) => installed.push(command.join(" ")),
-                    Probe::File(relative) => present.push((relative.to_string(), String::new())),
-                    Probe::Version { command, pin } => {
-                        installed.push(command.join(" "));
-                        printed.push((command.join(" "), format!("version: {FAKE_RELEASE}")));
-                        present.push((pin.to_string(), format!("{FAKE_RELEASE}\n")));
+            // The pin files the gate reads before any step. Every tool named in
+            // one is named in the other, so the rules that run first pass and
+            // the cases below exercise the steps rather than the pin round.
+            let mut pinned = String::from("[tools]\n");
+            let mut lock = String::new();
+            let mut tools: Vec<&str> = Vec::new();
+            for step in STEPS {
+                for run in std::iter::once(&step.primary).chain(step.fallback.as_ref()) {
+                    if run.mise {
+                        tools.push(run.command[0]);
+                    }
+                    if let Some(target) = run.resolved {
+                        tools.push(target.tool);
+                    }
+                    match run.probe {
+                        Probe::Command(command) => installed.push(as_run(run, command)),
+                        Probe::File(relative) => {
+                            present.push((relative.to_string(), String::new()));
+                        }
+                        Probe::Version(command) => {
+                            let line = as_run(run, command);
+                            installed.push(line.clone());
+                            printed.push((line, format!("version: {FAKE_RELEASE}")));
+                        }
                     }
                 }
             }
+            tools.sort_unstable();
+            tools.dedup();
+            for tool in &tools {
+                writeln!(pinned, "{tool} = \"{FAKE_RELEASE}\"").expect("write to a String");
+                writeln!(lock, "[[tools.{tool}]]\nversion = \"{FAKE_RELEASE}\"")
+                    .expect("write to a String");
+                for platform in ["linux-x64", "windows-x64"] {
+                    writeln!(
+                        lock,
+                        "[tools.{tool}.\"platforms.{platform}\"]\nchecksum = \"sha256:ab\""
+                    )
+                    .expect("write to a String");
+                }
+            }
+            pinned.push_str("\n[settings]\nlocked = true\n");
+            present.push((pins::PINS.to_string(), pinned));
+            present.push((pins::LOCK.to_string(), lock));
+            present.push((
+                pins::WORKFLOW.to_string(),
+                "        os: [windows-latest, ubuntu-latest]\n".to_string(),
+            ));
             Self {
                 unresolvable: Vec::new(),
                 installed,
@@ -689,20 +853,20 @@ mod tests {
             }
         }
 
-        /// Make one tool resolve nowhere on `PATH`.
-        fn unresolvable(mut self, program: &str) -> Self {
-            self.unresolvable.push(program.to_string());
+        /// Make one tool resolve nowhere under mise.
+        fn unresolvable(mut self, tool: &str) -> Self {
+            self.unresolvable.push(tool.to_string());
             self
         }
 
-        /// Drop one tool's probe, so the gate sees that tool as absent.
+        /// Drop one run's probe, so the gate sees that tool as absent.
         ///
-        /// A pinned tool keeps its pin file, because a gate that cannot read
+        /// A pinned tool keeps the pin file, because a gate that cannot read
         /// the pin is a different failure from one whose tool is not there.
-        fn without(mut self, probe: Probe) -> Self {
-            match probe {
-                Probe::Command(command) | Probe::Version { command, .. } => {
-                    let gone = command.join(" ");
+        fn without(mut self, run: &Run) -> Self {
+            match run.probe {
+                Probe::Command(command) | Probe::Version(command) => {
+                    let gone = as_run(run, command);
                     self.installed.retain(|line| *line != gone);
                 }
                 Probe::File(relative) => self.present.retain(|(path, _)| path != relative),
@@ -711,25 +875,28 @@ mod tests {
         }
 
         /// Make one pinned tool answer with `release`.
-        fn reporting(mut self, command: &[&str], release: &str) -> Self {
-            let line = command.join(" ");
+        fn reporting(mut self, run: &Run, release: &str) -> Self {
+            let Probe::Version(command) = run.probe else {
+                panic!("{} carries no pinned release", run.tool);
+            };
+            let line = as_run(run, command);
             self.printed.retain(|(probe, _)| *probe != line);
             self.printed.push((line, format!("version: {release}")));
             self
         }
 
-        /// Make one pin file unreadable.
-        fn unpinned(mut self, pin: &str) -> Self {
-            self.present.retain(|(path, _)| path != pin);
+        /// Make the pin file unreadable.
+        fn unpinned(mut self) -> Self {
+            self.present.retain(|(path, _)| path != pins::PINS);
             self
         }
 
-        /// Make one command exit non-zero, named by the declared command.
+        /// Make one run's command exit non-zero.
         ///
         /// A step may append a resolved tool path, so the declared command is a
         /// prefix of what runs rather than all of it.
-        fn failing(mut self, command: &[&str]) -> Self {
-            self.failing.push(command.join(" "));
+        fn failing(mut self, run: &Run) -> Self {
+            self.failing.push(as_run(run, run.command));
             self
         }
 
@@ -770,11 +937,11 @@ mod tests {
                 .map(|(_, contents)| contents.clone())
         }
 
-        fn resolve(&self, program: &str) -> Option<PathBuf> {
+        fn resolve(&self, tool: &str) -> Option<PathBuf> {
             self.unresolvable
                 .iter()
-                .all(|name| name != program)
-                .then(|| PathBuf::from(format!("{FAKE_BIN}/{program}")))
+                .all(|name| name != tool)
+                .then(|| PathBuf::from(format!("{FAKE_BIN}/{tool}")))
         }
     }
 
@@ -793,20 +960,84 @@ mod tests {
             for run in std::iter::once(&step.primary).chain(step.fallback.as_ref()) {
                 assert!(!run.tool.is_empty(), "{}: tool is empty", step.name);
                 match run.probe {
-                    Probe::Command(command) => {
+                    Probe::Command(command) | Probe::Version(command) => {
                         assert!(!command.is_empty(), "{}: probe is empty", step.name);
                     }
                     Probe::File(relative) => {
                         assert!(!relative.is_empty(), "{}: probe names no file", step.name);
                     }
-                    Probe::Version { command, pin } => {
-                        assert!(!command.is_empty(), "{}: probe is empty", step.name);
-                        assert!(!pin.is_empty(), "{}: probe names no pin file", step.name);
-                    }
                 }
                 assert!(!run.command.is_empty(), "{}: command is empty", step.name);
                 assert!(!run.install.is_empty(), "{}: install is empty", step.name);
             }
+        }
+    }
+
+    /// A mise tool runs by the one path `mise which` gave, probe included, so
+    /// nothing looks the name up a second time.
+    ///
+    /// The probe and the command have to open with the same program for that to
+    /// hold: the gate substitutes the resolved path into both, and a probe
+    /// naming another program would answer for a binary no step runs.
+    #[test]
+    fn every_mise_tool_probes_and_runs_the_same_program() {
+        for step in STEPS {
+            for run in std::iter::once(&step.primary).chain(step.fallback.as_ref()) {
+                if !run.mise {
+                    assert_ne!(
+                        run.install, MISE_INSTALL,
+                        "{}: {} installs with mise and does not resolve through it",
+                        step.name, run.tool
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    run.install, MISE_INSTALL,
+                    "{}: {} resolves through mise and names another installer",
+                    step.name, run.tool
+                );
+                let probed = match run.probe {
+                    Probe::Command(command) | Probe::Version(command) => command[0],
+                    Probe::File(relative) => {
+                        panic!("{}: a mise tool probes for the file {relative}", step.name)
+                    }
+                };
+                assert_eq!(
+                    probed, run.command[0],
+                    "{}: the probe runs {probed} and the step runs {}",
+                    step.name, run.command[0]
+                );
+            }
+        }
+    }
+
+    /// Every step whose tool mise owns runs the resolved path rather than a
+    /// bare name. A bare name would be looked up again, by a resolver the gate
+    /// does not control, which is the join the resolution exists to remove.
+    #[test]
+    fn every_mise_step_runs_the_path_mise_resolved() {
+        let runner = FakeRunner::all_installed();
+        let (rows, _) = gate(&runner);
+        assert!(rows.iter().all(Row::passed), "a step did not pass");
+
+        let ran = runner.ran();
+        for step in STEPS {
+            if !step.primary.mise {
+                continue;
+            }
+            let wanted = format!("{FAKE_BIN}/{}", step.primary.command[0]);
+            assert!(
+                ran.iter().any(|line| line.starts_with(&wanted)),
+                "{} ran no command opening with {wanted}, got {ran:?}",
+                step.name
+            );
+            assert!(
+                !ran.iter()
+                    .any(|line| line.starts_with(&format!("{} ", step.primary.command[0]))),
+                "{} ran {} by name, got {ran:?}",
+                step.name,
+                step.primary.command[0]
+            );
         }
     }
 
@@ -822,6 +1053,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "pins",
                 "fmt",
                 "taplo",
                 "clippy",
@@ -840,18 +1072,18 @@ mod tests {
             runner.ran(),
             [
                 "cargo fmt --check",
-                "taplo fmt --check",
+                "/fake/bin/taplo fmt --check",
                 "cargo clippy --workspace --all-targets -- -D warnings",
-                "cargo nextest run --workspace",
+                "/fake/bin/cargo-nextest nextest run --workspace",
                 "cargo test --workspace --doc",
-                "cargo deny check",
-                "cargo machete crates mods xtask",
-                "cargo audit",
+                "/fake/bin/cargo-deny check",
+                "/fake/bin/cargo-machete crates mods xtask",
+                "/fake/bin/cargo-audit audit",
                 "bunx --no-install --bun prettier --check **/*.{md,yml,yaml,json,js,mjs,cjs,ts}",
-                "shellcheck .githooks/commit-msg .githooks/pre-push",
-                "actionlint -pyflakes= -shellcheck=/fake/bin/shellcheck",
-                "zizmor --no-progress --offline --strict-collection --config .github/zizmor.yml \
-                 .github/workflows .github/dependabot.yml",
+                "/fake/bin/shellcheck .githooks/commit-msg .githooks/pre-push",
+                "/fake/bin/actionlint -pyflakes= -shellcheck=/fake/bin/shellcheck",
+                "/fake/bin/zizmor --no-progress --offline --strict-collection --config \
+                 .github/zizmor.yml .github/workflows .github/dependabot.yml",
             ]
         );
         assert!(rows.iter().all(Row::passed));
@@ -893,10 +1125,10 @@ mod tests {
         );
 
         let probe = STEPS[shellcheck].primary.probe;
-        let Probe::Version { pin, .. } = probe else {
-            panic!("the shellcheck step probes with {probe:?}, which passes at any release");
-        };
-        assert_eq!(pin, SHELLCHECK_PIN);
+        assert!(
+            matches!(probe, Probe::Version(_)),
+            "the shellcheck step probes with {probe:?}, which passes at any release"
+        );
 
         assert_eq!(
             STEPS[actionlint].primary.resolved,
@@ -921,7 +1153,7 @@ mod tests {
         let line = runner
             .ran()
             .into_iter()
-            .find(|line| line.starts_with("actionlint"))
+            .find(|line| line.starts_with(&format!("{FAKE_BIN}/actionlint")))
             .expect("the gate ran actionlint");
         assert!(
             line.contains(&format!("-shellcheck={FAKE_BIN}/shellcheck")),
@@ -933,31 +1165,70 @@ mod tests {
         );
     }
 
-    /// An analyzer the gate cannot locate stops the step. Running actionlint
-    /// without the flag would put the lookup back where it started, and a
-    /// failed lookup there is silent.
+    /// An analyzer mise resolves nowhere stops the gate at the step that owns
+    /// it, before actionlint is reached. Running actionlint without the flag
+    /// would put the lookup back where it started, and a failed lookup there is
+    /// silent.
     #[test]
-    fn an_analyzer_that_resolves_nowhere_stops_the_step() {
+    fn an_analyzer_that_resolves_nowhere_stops_the_gate_before_actionlint() {
         let runner = FakeRunner::all_installed().unresolvable("shellcheck");
         let (rows, text) = gate(&runner);
 
         let last = rows.last().expect("one row");
-        assert_eq!(last.step, "actionlint");
+        assert_eq!(last.step, "shellcheck");
         assert!(!last.passed());
+        assert!(
+            !runner
+                .ran()
+                .iter()
+                .any(|line| line.starts_with(&format!("{FAKE_BIN}/actionlint"))),
+            "actionlint ran anyway: {:?}",
+            runner.ran()
+        );
+        assert!(text.contains("shellcheck did not run"), "got {text}");
+    }
+
+    /// A step that fills a flag with a second tool's path refuses to run when
+    /// that path cannot be resolved, rather than dropping the flag.
+    ///
+    /// The real table never reaches this, because the step that owns the
+    /// analyzer runs first and stops the gate. The branch stays, and this is
+    /// what holds it: a one-step table whose tool resolves while the tool it
+    /// names does not.
+    #[test]
+    fn a_step_refuses_to_run_when_its_resolved_tool_is_missing() {
+        const LONE: &[Step] = &[Step {
+            name: "actionlint",
+            primary: Run {
+                tool: "actionlint",
+                mise: true,
+                probe: Probe::Command(&["actionlint", "-version"]),
+                command: &["actionlint", "-pyflakes="],
+                resolved: Some(Resolved {
+                    flag: "-shellcheck=",
+                    tool: "shellcheck",
+                }),
+                install: MISE_INSTALL,
+            },
+            fallback: None,
+        }];
+
+        let runner = FakeRunner::all_installed().unresolvable("shellcheck");
+        let mut out = Vec::new();
+        let rows = Gate::new(LONE, &runner).run(&mut out).expect("write");
+
+        let last = rows.last().expect("one row");
+        assert_eq!(last.step, "actionlint");
         assert!(
             matches!(&last.outcome, Outcome::Mismatched(why) if why.contains("shellcheck")),
             "got {:?}",
             last.outcome
         );
         assert!(
-            !runner
-                .ran()
-                .iter()
-                .any(|line| line.starts_with("actionlint")),
-            "actionlint ran anyway: {:?}",
+            runner.ran().is_empty(),
+            "actionlint ran without its analyzer: {:?}",
             runner.ran()
         );
-        assert!(text.contains("actionlint did not run"), "got {text}");
     }
 
     /// A tool at the wrong release stops the gate before the step that would
@@ -966,24 +1237,23 @@ mod tests {
     #[test]
     fn a_pinned_tool_at_another_release_stops_the_gate() {
         let shellcheck = step("shellcheck");
-        let Probe::Version { command, pin } = shellcheck.primary.probe else {
-            panic!("the shellcheck step carries no pinned release");
-        };
-
-        let runner = FakeRunner::all_installed().reporting(command, "1.2.3");
+        let runner = FakeRunner::all_installed().reporting(&shellcheck.primary, "1.2.3");
         let (rows, text) = gate(&runner);
 
         let last = rows.last().expect("one row");
         assert_eq!(last.step, "shellcheck");
         assert_eq!(
             last.outcome,
-            Outcome::Mismatched(format!("shellcheck is 1.2.3 and {pin} pins {FAKE_RELEASE}"))
+            Outcome::Mismatched(format!(
+                "shellcheck is 1.2.3 and {} pins {FAKE_RELEASE}",
+                pins::PINS
+            ))
         );
         assert!(
             !runner
                 .ran()
                 .iter()
-                .any(|line| line.starts_with("actionlint")),
+                .any(|line| line.starts_with(&format!("{FAKE_BIN}/actionlint"))),
             "actionlint ran against an analyzer the pin does not cover: {:?}",
             runner.ran()
         );
@@ -997,41 +1267,68 @@ mod tests {
         );
     }
 
-    /// A pin file nothing can read leaves the gate with no release to hold the
-    /// tool to, which is a refusal rather than a pass.
+    /// A pin file nothing can read stops the gate at its first row, before any
+    /// tool runs, because nothing then says which release anything should be.
     #[test]
     fn an_unreadable_pin_stops_the_gate() {
-        let Probe::Version { pin, .. } = step("shellcheck").primary.probe else {
-            panic!("the shellcheck step carries no pinned release");
-        };
+        let runner = FakeRunner::all_installed().unpinned();
+        let (rows, text) = gate(&runner);
 
-        let runner = FakeRunner::all_installed().unpinned(pin);
-        let (rows, _) = gate(&runner);
-
-        let last = rows.last().expect("one row");
-        assert_eq!(last.step, "shellcheck");
-        assert!(!last.passed());
+        assert_eq!(rows.len(), 1, "a step ran with no pin file to hold it to");
+        let first = &rows[0];
+        assert_eq!(first.step, "pins");
+        assert!(!first.passed());
         assert!(
-            matches!(&last.outcome, Outcome::Mismatched(why) if why.contains(pin)),
-            "got {:?}",
-            last.outcome
+            text.contains(&format!("{} cannot be read", pins::PINS)),
+            "got {text}"
         );
+        assert!(runner.ran().is_empty(), "got {:?}", runner.ran());
     }
 
-    /// A pin file holds one release past its comments, and a tool prints its
-    /// own among words of its own.
+    /// The pin file gives a version per tool, under the key that tool's binary
+    /// is named, whether the entry is the bare version or a table carrying
+    /// backend options. A tool no entry names has no version, which is a
+    /// refusal rather than a default.
     #[test]
     fn the_release_readers_take_the_shapes_they_name() {
+        let document = "\
+[tools]
+shellcheck = \"0.11.0\"
+taplo = \"0.10.0\"
+\"github:nextest-rs/nextest\" = { version = \"0.9.145\", version_prefix = \"cargo-nextest-\" }
+
+[settings]
+locked = true
+";
         let pins = [
-            ("0.11.0\n", Some("0.11.0")),
-            ("# a comment\n\n1.4.2\n", Some("1.4.2")),
-            ("  1.4.2  \n", Some("1.4.2")),
-            ("# only comments\n", None),
+            ("shellcheck", Some("0.11.0")),
+            ("taplo", Some("0.10.0")),
+            ("github:nextest-rs/nextest", Some("0.9.145")),
+            // A coordinate is one key, so the name at the end of it is not an
+            // entry of its own.
+            ("nextest", None),
+            ("cargo-nextest", None),
+            // A table in another section is not a tool.
+            ("locked", None),
             ("", None),
         ];
-        for (text, expected) in pins {
-            assert_eq!(pinned_release(text), expected, "{text:?}");
+        for (name, expected) in pins {
+            assert_eq!(
+                pinned_version(document, name).as_deref(),
+                expected,
+                "{name:?}"
+            );
         }
+        assert_eq!(
+            pinned_version("this is not toml = = =", "taplo"),
+            None,
+            "an unparseable pin file reads as no version rather than panicking"
+        );
+        assert_eq!(
+            pinned_version("[settings]\nlocked = true\n", "taplo"),
+            None,
+            "a pin file with no tools table names no version"
+        );
 
         let outputs = [
             (
@@ -1137,11 +1434,11 @@ mod tests {
         let tests = &STEPS[3];
         assert_eq!(tests.name, "tests");
 
-        for probe in [None, Some(tests.primary.probe)] {
+        for drop_nextest in [false, true] {
             let mut runner = FakeRunner::all_installed();
             let mut note = "with cargo-nextest";
-            if let Some(probe) = probe {
-                runner = runner.without(probe);
+            if drop_nextest {
+                runner = runner.without(&tests.primary);
                 note = "without cargo-nextest";
             }
             let (rows, _) = gate(&runner);
@@ -1235,11 +1532,11 @@ mod tests {
 
         let command = step("machete").primary.command;
         assert_eq!(
-            &command[..2],
-            ["cargo", "machete"],
+            &command[..1],
+            ["cargo-machete"],
             "the machete step runs {command:?}"
         );
-        let mut walked: Vec<&str> = command[2..].to_vec();
+        let mut walked: Vec<&str> = command[1..].to_vec();
         walked.sort_unstable();
         assert_eq!(
             walked, members,
@@ -1251,13 +1548,13 @@ mod tests {
     #[test]
     fn a_failing_step_stops_the_gate() {
         for (index, step) in STEPS.iter().enumerate() {
-            let runner = FakeRunner::all_installed().failing(step.primary.command);
+            let runner = FakeRunner::all_installed().failing(&step.primary);
             let (rows, text) = gate(&runner);
 
             assert_eq!(
                 rows.len(),
-                index + 1,
-                "{} ran the steps after it",
+                index + 2,
+                "{} ran the steps after it, counting the pin row that opens the gate",
                 step.name
             );
             assert_eq!(runner.ran().len(), index + 1, "{}: ran too much", step.name);
@@ -1275,9 +1572,9 @@ mod tests {
     #[test]
     fn a_missing_tool_is_reported_by_name() {
         for (index, step) in STEPS.iter().enumerate() {
-            let mut runner = FakeRunner::all_installed().without(step.primary.probe);
+            let mut runner = FakeRunner::all_installed().without(&step.primary);
             if let Some(fallback) = &step.fallback {
-                runner = runner.without(fallback.probe);
+                runner = runner.without(fallback);
             }
             let (rows, text) = gate(&runner);
 
@@ -1309,7 +1606,7 @@ mod tests {
     fn tests_fall_back_to_cargo_test_when_nextest_is_absent() {
         let step = &STEPS[3];
         assert_eq!(step.name, "tests");
-        let runner = FakeRunner::all_installed().without(step.primary.probe);
+        let runner = FakeRunner::all_installed().without(&step.primary);
         let (rows, text) = gate(&runner);
 
         assert!(rows.iter().all(Row::passed), "the fallback did not pass");
@@ -1329,7 +1626,9 @@ mod tests {
     /// a pass.
     #[test]
     fn a_command_that_will_not_start_fails_the_gate() {
-        struct Broken;
+        // The pin files come from the sound runner, so the row that opens the
+        // gate passes and the case reaches the step it is about.
+        struct Broken(FakeRunner);
         impl Runner for Broken {
             fn capture(&self, _command: &[&str]) -> Option<String> {
                 Some(FAKE_RELEASE.to_string())
@@ -1340,8 +1639,10 @@ mod tests {
                     "program not found",
                 ))
             }
-            fn read_file(&self, _relative: &str) -> Option<String> {
-                Some(FAKE_RELEASE.to_string())
+            fn read_file(&self, relative: &str) -> Option<String> {
+                self.0
+                    .read_file(relative)
+                    .or_else(|| Some(FAKE_RELEASE.to_string()))
             }
             fn resolve(&self, program: &str) -> Option<PathBuf> {
                 Some(PathBuf::from(format!("{FAKE_BIN}/{program}")))
@@ -1349,11 +1650,16 @@ mod tests {
         }
 
         let mut out = Vec::new();
-        let rows = Gate::new(STEPS, &Broken).run(&mut out).expect("write");
+        let broken = Broken(FakeRunner::all_installed());
+        let rows = Gate::new(STEPS, &broken).run(&mut out).expect("write");
 
-        assert_eq!(rows.len(), 1);
-        assert!(!rows[0].passed());
-        assert!(matches!(rows[0].outcome, Outcome::Unstartable(_)));
+        assert_eq!(
+            rows.len(),
+            2,
+            "the pin row opens the gate and fmt follows it"
+        );
+        assert!(!rows[1].passed());
+        assert!(matches!(rows[1].outcome, Outcome::Unstartable(_)));
     }
 
     /// An empty step table renders a passing gate with nothing in it.
@@ -1364,9 +1670,14 @@ mod tests {
         let steps: &[Step] = &[];
         let rows = Gate::new(steps, &runner).run(&mut out).expect("write");
 
-        assert!(rows.is_empty());
+        assert_eq!(
+            rows.len(),
+            1,
+            "the pin row runs whatever the step table holds"
+        );
+        assert_eq!(rows[0].step, "pins");
         let text = String::from_utf8(out).expect("utf-8");
-        assert!(text.contains("0 steps passed"), "got {text}");
+        assert!(text.contains("1 steps passed"), "got {text}");
     }
 
     /// The fallback stays unused while the first tool answers.
@@ -1375,8 +1686,9 @@ mod tests {
         let runner = FakeRunner::all_installed();
         let (rows, _) = gate(&runner);
 
-        assert!(!rows[3].fell_back);
-        assert_eq!(rows[3].tool, "cargo-nextest");
+        let tests = &rows[4];
+        assert!(!tests.fell_back);
+        assert_eq!(tests.tool, "cargo-nextest");
     }
 
     /// A row's glyph separates a failure from a tool that never ran.
@@ -1490,6 +1802,7 @@ mod tests {
     fn a_run_is_addressable_by_field() {
         let run = Run {
             tool: "prettier",
+            mise: false,
             probe: Probe::File("node_modules/prettier/package.json"),
             command: &["bunx", "--no-install", "--bun", "prettier", "--check", "."],
             resolved: None,

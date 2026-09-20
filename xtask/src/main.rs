@@ -1,11 +1,13 @@
 //! Repository automation, run as `cargo xtask <command>`.
 //!
-//! `check` is the gate. `hooks install` points git at `.githooks`. `server` and
+//! `check` is the gate, and `pins` is its first step run alone. `hooks install`
+//! points git at `.githooks`. `server` and
 //! `schema` forward to Ember's xtask through the submodule, because those drive
 //! Keen's binary rather than anything this repository owns.
 
 pub mod check;
 mod hooks;
+pub mod pins;
 #[cfg(test)]
 mod policy;
 mod runner;
@@ -49,6 +51,8 @@ enum Command {
     Scopes,
     /// Run the gate: every check a change has to pass.
     Check,
+    /// Hold mise.toml and mise.lock to their rules, which the gate does first.
+    Pins,
     /// Manage this clone's git hooks.
     Hooks {
         #[command(subcommand)]
@@ -111,6 +115,14 @@ fn dispatch() -> anyhow::Result<ExitCode> {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
+            })
+        }
+        Command::Pins => {
+            let problems = check::Gate::new(check::STEPS, &runner).pins(&mut out)?;
+            Ok(if problems {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
             })
         }
         Command::Hooks {
