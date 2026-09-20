@@ -69,13 +69,13 @@ pub trait Runner {
     /// read.
     fn read_file(&self, relative: &str) -> Option<String>;
 
-    /// The path `program` resolves to on `PATH`, or `None` when it is not
-    /// there.
+    /// The path mise installs for `tool`, or `None` when mise resolves none.
     ///
-    /// A tool that another tool looks up by name is handed this path instead,
-    /// so the binary the gate checked and the binary that runs are the same one
-    /// by construction rather than by two lookups agreeing.
-    fn resolve(&self, program: &str) -> Option<PathBuf>;
+    /// Every pinned tool runs by this path rather than by name. The binary the
+    /// gate probed, the binary a step runs and the binary handed to a tool that
+    /// would otherwise look one up are then the same file by construction,
+    /// rather than three lookups agreeing.
+    fn resolve(&self, tool: &str) -> Option<PathBuf>;
 }
 
 /// The `Runner` that spawns real child processes.
@@ -113,8 +113,25 @@ impl Runner for Processes {
         fs::read_to_string(relative).ok()
     }
 
-    fn resolve(&self, program: &str) -> Option<PathBuf> {
-        which::which(program).ok()
+    fn resolve(&self, tool: &str) -> Option<PathBuf> {
+        // Standard output alone, rather than the merged streams `capture`
+        // returns. `mise which` writes the path to standard output and any
+        // warning to standard error, and reading only the stream that carries
+        // the answer keeps the path independent of how the two interleave.
+        let mut child = Command::new("mise");
+        scrub(&mut child);
+        let output = child
+            .args(["which", tool])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+        let line = printed.lines().next()?.trim();
+        (!line.is_empty()).then(|| PathBuf::from(line))
     }
 }
 
