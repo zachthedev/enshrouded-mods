@@ -6,9 +6,19 @@ a stock client.
 ## What you need
 
 - An Enshrouded dedicated server you run yourself
-- Ember, the loader, from
-  [enshrouded-ember](https://github.com/zachthedev/enshrouded-ember)
-- The `private-chests` library
+- `private-chests-v<version>.zip`, from this repository's
+  [releases](https://github.com/zachthedev/enshrouded-mods/releases)
+
+The archive carries Ember, the loader, along with the mod, so a first install
+needs nothing else. Upgrading Ember on its own is a separate download, described
+below.
+
+Every release attaches a `SHA256SUMS` file beside the archive. Check what you
+downloaded against it before extracting:
+
+```powershell
+Get-FileHash private-chests-v<version>.zip -Algorithm SHA256
+```
 
 ## Where the files go
 
@@ -28,6 +38,10 @@ ember/
       config.json                     The mod's settings
 ```
 
+The archive holds the two libraries and nothing else. Each library writes its
+own `config.json` on first start, so extracting a newer archive over a server
+you already run leaves your settings where they are.
+
 `POWRPROF.dll` is the default proxy name, because no other public Enshrouded
 loader claims it. The same library renamed to `IPHLPAPI.dll` or `dbghelp.dll`
 forwards those instead, for a server that already has something in the first
@@ -37,9 +51,9 @@ One directory to drop in, and mods compose without further steps.
 
 ## Windows
 
-Copy the files into the server directory as laid out above and start the server
-the way you already do. Ember writes a startup report to `ember/logs`, naming
-every mod it loaded and every symbol it failed to resolve.
+Extract the archive into the server directory as laid out above and start the
+server the way you already do. Ember writes a startup report to `ember/logs`,
+naming every mod it loaded and every symbol it failed to resolve.
 
 ## Wine and Proton
 
@@ -59,6 +73,21 @@ running the `IPHLPAPI.dll` build uses `iphlpapi=n,b` instead.
 
 Without the override the server starts and no mod loads, which looks exactly
 like a vanilla server.
+
+## Upgrading Ember on its own
+
+Ember releases on its own schedule, in
+[enshrouded-ember](https://github.com/zachthedev/enshrouded-ember). Each release
+there attaches `POWRPROF.dll` with a `SHA256SUMS` of its own. Replace the file
+beside the server executable and leave `ember/` alone.
+
+It is the same library a mod's archive carries. Ember builds the loader once and
+a mod's release downloads that asset rather than building its own, so the file
+you install either way is the same one.
+
+Ember refuses to load a mod built against an ABI it does not match, and names
+that mod in the startup report. Take that mod's newest release when you see it
+named.
 
 ## Turning on chat
 

@@ -33,6 +33,13 @@ owo-colors = { version = "4.4.0", features = ["supports-colors"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# The digest the release bundle is published with, and the one `package` holds
+# Ember's loader asset to.
+sha2 = "0.11.0"
+# A directory that removes itself. `package` stages Ember's release assets
+# outside the output directory, which holds the archive and its digest file and
+# nothing else.
+tempfile = "3.27.0"
 thiserror = "2.0.20"
 # A TOML parser. The gate reads mise.toml for the version a tool is pinned to,
 # and the tests read the manifests and the lockfile beside it.
@@ -41,6 +48,14 @@ tracing = "0.1.44"
 # A YAML parser, for the tests that read the Dependabot, zizmor and workflow
 # configuration. They read UTF-8 text, so the encoding detection stays out.
 yaml-rust2 = { version = "0.13.0", default-features = false }
+# The archive writer for `package`. Deflate alone, through the pure-Rust zlib
+# backend: a server admin extracts the bundle with whatever ships on the host,
+# and every other method this crate can write needs a tool that understands it.
+# The bare `deflate` feature adds a second encoder that trades build time for a
+# smaller archive, which a bundle of two libraries has no use for.
+zip = { version = "8.6.0", default-features = false, features = [
+    "deflate-flate2-zlib-rs",
+] }
 
 [workspace.lints.rust]
 missing_docs = "warn"
