@@ -111,8 +111,8 @@ mod tests {
     }
 
     impl Runner for FakeRunner {
-        fn probe(&self, _command: &[&str]) -> bool {
-            true
+        fn capture(&self, _command: &[&str]) -> Option<String> {
+            Some(String::new())
         }
 
         fn run(&self, command: &[&str]) -> io::Result<Exit> {
@@ -120,8 +120,12 @@ mod tests {
             Ok(Exit::Ok)
         }
 
-        fn file_exists(&self, _relative: &str) -> bool {
-            false
+        fn read_file(&self, _relative: &str) -> Option<String> {
+            None
+        }
+
+        fn resolve(&self, _program: &str) -> Option<PathBuf> {
+            None
         }
     }
 

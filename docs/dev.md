@@ -23,9 +23,11 @@ cargo command. A C toolchain is needed for MinHook, the hook engine Ember uses;
 on Windows that is Visual Studio Build Tools.
 
 The gate calls tools that rustup does not install. `.github/cargo-tools` pins
-the crates.io packages among them, and `.github/go-tools` pins the Go programs,
-which need [Go](https://go.dev) to install. The versions live in those files and
-nowhere else, so this installs what continuous integration installs:
+the crates.io packages among them, `.github/go-tools` pins the Go programs,
+which need [Go](https://go.dev) to install, and `.github/shellcheck-version`
+pins [ShellCheck](https://www.shellcheck.net), which is neither. The versions
+live in those files and nowhere else, so this installs what continuous
+integration installs:
 
 ```powershell
 cargo install --locked @(Get-Content .github/cargo-tools | Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() })
@@ -38,6 +40,13 @@ On a shell without PowerShell:
 cargo install --locked $(grep -v '^#' .github/cargo-tools | grep .)
 grep -v '^#' .github/go-tools | grep . | xargs -n 1 go install
 ```
+
+No one command installs ShellCheck on every host, so it comes from whatever that
+host uses: `winget install koalaman.shellcheck` on Windows,
+`apt install shellcheck` or `brew install shellcheck` elsewhere, or the archive
+from [its releases](https://github.com/koalaman/shellcheck/releases). The gate
+refuses any release but the one `.github/shellcheck-version` holds, and names
+both when they disagree, so the route does not matter and the release does.
 
 [Bun](https://bun.sh) runs the repository's own tooling, at the release
 `.bun-version` pins. Install the hooks and the markup formatter with one

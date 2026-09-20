@@ -1522,14 +1522,15 @@ mod tests {
                 |(_, value)| value,
             );
 
-        let pin = ".github/cargo-tools";
-        let variable = pin_file_variable(&script, pin).unwrap_or_else(|| {
-            panic!("the {id} step sets no variable from {pin}, so nothing ties the two")
-        });
-        assert!(
-            written.contains(&format!("${variable}")),
-            "the {output} output is {written:?}, which never reads the ${variable} that holds {pin}"
-        );
+        for pin in [".github/cargo-tools", crate::check::SHELLCHECK_PIN] {
+            let variable = pin_file_variable(&script, pin).unwrap_or_else(|| {
+                panic!("the {id} step sets no variable from {pin}, so nothing ties the two")
+            });
+            assert!(
+                written.contains(&format!("${variable}")),
+                "the {output} output is {written:?}, which never reads the ${variable} that holds {pin}"
+            );
+        }
 
         let text = read(".github/workflows/ci.yml");
         for (tool, version) in pinned_tools() {
@@ -1544,6 +1545,14 @@ mod tests {
                 "the workflow carries its own copy of {entry}"
             );
         }
+        let shellcheck = read(crate::check::SHELLCHECK_PIN);
+        let release = crate::check::pinned_release(&shellcheck)
+            .expect("the ShellCheck pin file holds a release");
+        assert!(
+            !holds_version(&text, release),
+            "the workflow carries its own copy of the release {} pins",
+            crate::check::SHELLCHECK_PIN
+        );
     }
 
     /// `go install` runs the entries the pin file holds, through a variable the
@@ -1659,6 +1668,77 @@ mod tests {
                     .map(|(id, name)| (id.as_str(), name.as_str())),
                 expected,
                 "{input:?}"
+            );
+        }
+    }
+
+    /// The `shellcheck` pin holds one exact release, and the gate's own reader
+    /// is what says so.
+    ///
+    /// Nothing else asserts this. `holds_version` reads the pinned value only
+    /// to keep it out of the workflow, and it answers false for a malformed
+    /// one, so `stable` or `0.11` reaches the gate and is refused there with a
+    /// message blaming the tool for what the pin file got wrong.
+    #[test]
+    fn the_shellcheck_pin_holds_one_exact_release() {
+        let text = read(crate::check::SHELLCHECK_PIN);
+        let pinned = crate::check::pinned_release(&text)
+            .unwrap_or_else(|| panic!("{} names no release", crate::check::SHELLCHECK_PIN));
+        assert!(
+            crate::check::is_release(pinned),
+            "{} holds {pinned:?}, which is not three runs of digits, so the gate would refuse \
+             the installed tool rather than this file",
+            crate::check::SHELLCHECK_PIN
+        );
+    }
+
+    /// The shellcheck step names every hook in `.githooks`.
+    ///
+    /// A command spawns with no shell to expand a glob, so the step names its
+    /// files one by one. A hook added and left off that list is shell the gate
+    /// reports a pass over without reading.
+    #[test]
+    fn the_shellcheck_step_names_every_hook() {
+        let mut hooks: Vec<String> = fs::read_dir(repo_root().join(".githooks"))
+            .expect(".githooks is readable")
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| format!(".githooks/{}", entry.file_name().to_string_lossy()))
+            .collect();
+        hooks.sort();
+        assert!(!hooks.is_empty(), ".githooks holds no hook");
+
+        let command = crate::check::STEPS
+            .iter()
+            .find(|step| step.name == "shellcheck")
+            .expect("a shellcheck step")
+            .primary
+            .command;
+        let mut checked: Vec<String> = command[1..].iter().map(|arg| (*arg).to_string()).collect();
+        checked.sort();
+        assert_eq!(
+            checked, hooks,
+            "the shellcheck step reads {checked:?} and .githooks holds {hooks:?}"
+        );
+    }
+
+    /// Every hook declares a shell in a shebang, which is what tells shellcheck
+    /// which dialect to read it as. A hook with none is skipped as a file
+    /// shellcheck cannot classify.
+    #[test]
+    fn every_hook_names_its_shell_in_a_shebang() {
+        for entry in fs::read_dir(repo_root().join(".githooks"))
+            .expect(".githooks is readable")
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+        {
+            let path = entry.path();
+            let text = fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("{} cannot be read: {err}", path.display()));
+            assert!(
+                text.starts_with("#!/"),
+                "{} opens with no shebang, so shellcheck cannot tell its dialect",
+                path.display()
             );
         }
     }
@@ -2380,6 +2460,14 @@ unix-taken.workspace = true
         }
         pins.push((".bun-version", read(".bun-version").trim().to_string()));
 
+        let shellcheck = read(crate::check::SHELLCHECK_PIN);
+        pins.push((
+            crate::check::SHELLCHECK_PIN,
+            crate::check::pinned_release(&shellcheck)
+                .expect("the ShellCheck pin file holds a release")
+                .to_string(),
+        ));
+
         let workflow = yaml(".github/workflows/ci.yml");
         let mut values: Vec<(Vec<String>, Yaml)> = Vec::new();
         keyed_values(&workflow, &[], &mut values);
@@ -2417,6 +2505,7 @@ unix-taken.workspace = true
             ".github/go-tools",
             ".bun-version",
             ".github/workflows/ci.yml",
+            crate::check::SHELLCHECK_PIN,
         ] {
             assert!(
                 pins.iter().any(|(from, _)| *from == source),
