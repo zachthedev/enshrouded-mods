@@ -519,13 +519,23 @@ impl<'a> Gate<'a> {
                 .read_file(path)
                 .ok_or_else(|| format!("{path} cannot be read"))
         };
-        match (read(pins::PINS), read(pins::LOCK), read(pins::WORKFLOW)) {
-            (Ok(pin_text), Ok(lock), Ok(workflow)) => pins::problems(&pin_text, &lock, &workflow),
-            (first, second, third) => [first, second, third]
-                .into_iter()
-                .filter_map(Result::err)
-                .collect(),
-        }
+        // The environment can point mise at a file other than the one these
+        // rules read, which would leave them judging a document mise ignores.
+        // Reading the variables costs no process, so the row still runs before
+        // mise exists on a machine.
+        let mut found = pins::environment_problems(|name| std::env::var(name).ok());
+        found.extend(
+            match (read(pins::PINS), read(pins::LOCK), read(pins::WORKFLOW)) {
+                (Ok(pin_text), Ok(lock), Ok(workflow)) => {
+                    pins::problems(&pin_text, &lock, &workflow)
+                }
+                (first, second, third) => [first, second, third]
+                    .into_iter()
+                    .filter_map(Result::err)
+                    .collect(),
+            },
+        );
+        found
     }
 
     /// The row for the pin rules, which run before any tool does.
@@ -755,6 +765,9 @@ mod tests {
     /// lives in the real pin file, which no test here reads.
     const FAKE_RELEASE: &str = "9.9.9";
 
+    /// A digest of the shape the pin rules require, for the fixture lockfile.
+    const FAKE_DIGEST: &str = "abababababababababababababababababababababababababababababababab";
+
     /// The directory `FakeRunner` claims every mise tool resolves into.
     const FAKE_BIN: &str = "/fake/bin";
 
@@ -795,20 +808,16 @@ mod tests {
             let mut installed = Vec::new();
             let mut printed = Vec::new();
             let mut present = Vec::new();
-            // The pin files the gate reads before any step. Every tool named in
-            // one is named in the other, so the rules that run first pass and
-            // the cases below exercise the steps rather than the pin round.
+            // The pin files the gate reads before any step. Both are built from
+            // `pins::TOOLS`, so the rules that run first pass and the cases
+            // below exercise the steps rather than the pin round. The entries
+            // carry a backend and a url as well as a checksum, because the
+            // rules hold a lockfile to the owner and the repository in source
+            // and a thinner entry is one no real lockfile would contain.
             let mut pinned = String::from("[tools]\n");
             let mut lock = String::new();
-            let mut tools: Vec<&str> = Vec::new();
             for step in STEPS {
                 for run in std::iter::once(&step.primary).chain(step.fallback.as_ref()) {
-                    if run.mise {
-                        tools.push(run.command[0]);
-                    }
-                    if let Some(target) = run.resolved {
-                        tools.push(target.tool);
-                    }
                     match run.probe {
                         Probe::Command(command) => installed.push(as_run(run, command)),
                         Probe::File(relative) => {
@@ -822,21 +831,42 @@ mod tests {
                     }
                 }
             }
-            tools.sort_unstable();
-            tools.dedup();
-            for tool in &tools {
-                writeln!(pinned, "{tool} = \"{FAKE_RELEASE}\"").expect("write to a String");
-                writeln!(lock, "[[tools.{tool}]]\nversion = \"{FAKE_RELEASE}\"")
+            for tool in pins::TOOLS {
+                writeln!(pinned, "\"{}\" = \"{FAKE_RELEASE}\"", tool.key)
                     .expect("write to a String");
+                writeln!(
+                    lock,
+                    "[[tools.\"{}\"]]\nversion = \"{FAKE_RELEASE}\"\nbackend = \"{}\"",
+                    tool.key,
+                    tool.coordinate()
+                )
+                .expect("write to a String");
                 for platform in ["linux-x64", "windows-x64"] {
                     writeln!(
                         lock,
-                        "[tools.{tool}.\"platforms.{platform}\"]\nchecksum = \"sha256:ab\""
+                        "[tools.\"{}\".\"platforms.{platform}\"]\nchecksum = \"sha256:{}\"\nurl = \
+                         \"https://github.com{}{}/{}\"\nurl_api = \
+                         \"https://api.github.com/repos/{}/{}/releases/assets/1\"",
+                        tool.key,
+                        FAKE_DIGEST,
+                        tool.release_prefix(),
+                        tool.tag(FAKE_RELEASE),
+                        tool.binary,
+                        tool.owner,
+                        tool.repository
                     )
                     .expect("write to a String");
+                    // An attested tool's entry carries the line that makes
+                    // verification required for it, the same as a real one.
+                    if let Some(provenance) = tool.provenance {
+                        writeln!(lock, "provenance = \"{provenance}\"").expect("write to a String");
+                    }
                 }
             }
-            pinned.push_str("\n[settings]\nlocked = true\n");
+            pinned.push_str(
+                "\n[tool_config]\nlocked = true\n\n[settings]\nlocked = \
+                 true\nlocked_verify_provenance = true\n",
+            );
             present.push((pins::PINS.to_string(), pinned));
             present.push((pins::LOCK.to_string(), lock));
             present.push((
