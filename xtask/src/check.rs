@@ -15,6 +15,9 @@ use crate::runner::{Exit, Runner};
 // The step table
 // ///////////////////////////////////////////////
 
+/// The file holding the one `shellcheck` release the gate accepts.
+pub const SHELLCHECK_PIN: &str = ".github/shellcheck-version";
+
 /// How the gate tells whether a tool is installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Probe {
@@ -25,6 +28,32 @@ pub enum Probe {
     /// repository root. This is the shape for a tool that would fetch itself
     /// from a registry when asked to run.
     File(&'static str),
+    /// A command whose output has to carry the release a pin file holds. This
+    /// is the shape for a tool another tool picks up from `PATH` by itself,
+    /// where a different release changes which findings the gate reports while
+    /// every step still passes.
+    Version {
+        /// The command that prints the release. The first element is the
+        /// program.
+        command: &'static [&'static str],
+        /// The file holding the one release that output may carry, relative to
+        /// the repository root.
+        pin: &'static str,
+    },
+}
+
+/// A last argument the gate fills in with a tool's resolved path.
+///
+/// A tool that shells out to a second tool looks the second one up by name
+/// unless it is told otherwise, which is a second lookup the gate does not
+/// control. Handing over the path the gate resolved makes the checked binary
+/// and the used binary the same one by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resolved {
+    /// The flag the path follows, including its `=`.
+    pub flag: &'static str,
+    /// The tool whose path on `PATH` fills the flag.
+    pub tool: &'static str,
 }
 
 /// One command, and the tool that has to be installed to run it.
@@ -35,6 +64,10 @@ pub struct Run {
     pub probe: Probe,
     /// The command itself. `command[0]` is the program.
     pub command: &'static [&'static str],
+    /// An argument appended to `command` carrying a resolved tool path. The
+    /// step refuses to run when the path cannot be resolved, because the
+    /// command without it would look the tool up itself.
+    pub resolved: Option<Resolved>,
     /// The command that installs the tool, printed when it is missing.
     pub install: &'static str,
 }
@@ -57,6 +90,7 @@ pub const STEPS: &[Step] = &[
             tool: "rustfmt",
             probe: Probe::Command(&["cargo", "fmt", "--version"]),
             command: &["cargo", "fmt", "--check"],
+            resolved: None,
             install: "rustup component add rustfmt",
         },
         fallback: None,
@@ -69,6 +103,7 @@ pub const STEPS: &[Step] = &[
             // The files and the exclusions are in .taplo.toml, so the same set
             // is formatted whether the gate or an editor runs the tool.
             command: &["taplo", "fmt", "--check"],
+            resolved: None,
             install: "cargo install taplo-cli --locked",
         },
         fallback: None,
@@ -87,6 +122,7 @@ pub const STEPS: &[Step] = &[
                 "-D",
                 "warnings",
             ],
+            resolved: None,
             install: "rustup component add clippy",
         },
         fallback: None,
@@ -97,12 +133,14 @@ pub const STEPS: &[Step] = &[
             tool: "cargo-nextest",
             probe: Probe::Command(&["cargo", "nextest", "--version"]),
             command: &["cargo", "nextest", "run", "--workspace"],
+            resolved: None,
             install: "cargo install cargo-nextest --locked",
         },
         fallback: Some(Run {
             tool: "cargo test",
             probe: Probe::Command(&["cargo", "--version"]),
             command: &["cargo", "test", "--workspace"],
+            resolved: None,
             install: "rustup toolchain install stable",
         }),
     },
@@ -117,6 +155,7 @@ pub const STEPS: &[Step] = &[
             // step fell back to `cargo test`. What the gate covers then does not
             // depend on which test runner is installed.
             command: &["cargo", "test", "--workspace", "--doc"],
+            resolved: None,
             install: "rustup toolchain install stable",
         },
         fallback: None,
@@ -127,6 +166,7 @@ pub const STEPS: &[Step] = &[
             tool: "cargo-deny",
             probe: Probe::Command(&["cargo", "deny", "--version"]),
             command: &["cargo", "deny", "check"],
+            resolved: None,
             install: "cargo install cargo-deny --locked",
         },
         fallback: None,
@@ -139,6 +179,7 @@ pub const STEPS: &[Step] = &[
             // Named directories, because vendor/ holds Ember's own workspace
             // and its manifests are checked by Ember's own gate.
             command: &["cargo", "machete", "crates", "mods", "xtask"],
+            resolved: None,
             install: "cargo install cargo-machete --locked",
         },
         fallback: None,
@@ -149,6 +190,7 @@ pub const STEPS: &[Step] = &[
             tool: "cargo-audit",
             probe: Probe::Command(&["cargo", "audit", "--version"]),
             command: &["cargo", "audit"],
+            resolved: None,
             install: "cargo install cargo-audit --locked",
         },
         fallback: None,
@@ -172,7 +214,35 @@ pub const STEPS: &[Step] = &[
                 "--check",
                 "**/*.{md,yml,yaml,json,js,mjs,cjs,ts}",
             ],
+            resolved: None,
             install: "bun install",
+        },
+        fallback: None,
+    },
+    Step {
+        name: "shellcheck",
+        primary: Run {
+            tool: "shellcheck",
+            // The release, not the presence. actionlint picks shellcheck up
+            // from PATH by itself, so a host carrying a different release
+            // reports different findings while every step still passes. This
+            // step runs before actionlint, and the gate stops at the first step
+            // that does not pass, so actionlint is never reached on a host the
+            // pin does not cover.
+            probe: Probe::Version {
+                command: &["shellcheck", "--version"],
+                pin: SHELLCHECK_PIN,
+            },
+            // The git hooks are the POSIX shell this repository owns outside a
+            // workflow. actionlint reaches a `run:` block only where it
+            // resolves the shell to sh or bash, which no block in the gate job
+            // is, so these two files are the bulk of what the analysis covers.
+            // A test holds this list equal to what `.githooks` holds, because a
+            // command spawns with no shell to expand a glob.
+            command: &["shellcheck", ".githooks/commit-msg", ".githooks/pre-push"],
+            resolved: None,
+            install: "the release .github/shellcheck-version pins, from \
+                      https://github.com/koalaman/shellcheck/releases",
         },
         fallback: None,
     },
@@ -187,13 +257,25 @@ pub const STEPS: &[Step] = &[
             // files rather than directories, so naming the directory would be
             // a read error rather than a narrowing.
             //
-            // The empty flags turn off the external analyzers. actionlint runs
-            // shellcheck and pyflakes when it finds them on PATH and says
-            // nothing at all when it does not, and ubuntu-latest carries
-            // shellcheck while windows-latest does not. Left on, the matrix legs
-            // check different things and the quiet leg reports a pass for an
-            // analysis it never ran.
-            command: &["actionlint", "-shellcheck=", "-pyflakes="],
+            // The empty flag turns pyflakes off. actionlint runs an external
+            // analyzer when it finds it on PATH and says nothing at all when it
+            // does not, so an absent analyzer is a pass for a pass nobody ran.
+            // No Windows package manager ships pyflakes, which leaves off as
+            // the only setting both matrix legs can agree on.
+            //
+            // shellcheck stays on, and the step before this one holds it to one
+            // release on every host, so both legs run the same analysis.
+            command: &["actionlint", "-pyflakes="],
+            // shellcheck arrives as a resolved path rather than a name.
+            // actionlint is equally silent over an analyzer that is absent and
+            // one that will not execute, so naming the binary the step before
+            // this one version-checked is what ties the check to the analysis.
+            // A name would be looked up a second time, by a resolver the gate
+            // does not control.
+            resolved: Some(Resolved {
+                flag: "-shellcheck=",
+                tool: "shellcheck",
+            }),
             // The version is here and in .github/go-tools, and a test asserts
             // the two agree. actionlint is on neither crates.io nor
             // taiki-e/install-action, so it cannot sit in .github/cargo-tools
@@ -229,6 +311,7 @@ pub const STEPS: &[Step] = &[
                 ".github/workflows",
                 ".github/dependabot.yml",
             ],
+            resolved: None,
             install: "cargo install zizmor --locked",
         },
         fallback: None,
@@ -250,6 +333,9 @@ pub enum Outcome {
     Missing,
     /// The tool answered its probe and the command still would not start.
     Unstartable(String),
+    /// The tool answered and gave a release its pin file does not hold, so the
+    /// step never ran. The string says which release is which.
+    Mismatched(String),
 }
 
 /// One step's result.
@@ -282,7 +368,9 @@ impl Row {
             Outcome::Passed if self.fell_back => format!("{} ({})", self.step, self.command),
             Outcome::Passed | Outcome::Failed => self.step.to_string(),
             Outcome::Missing => format!("{} ({} is not installed)", self.step, self.tool),
-            Outcome::Unstartable(why) => format!("{} ({why})", self.step),
+            Outcome::Unstartable(why) | Outcome::Mismatched(why) => {
+                format!("{} ({why})", self.step)
+            }
         }
     }
 
@@ -291,9 +379,62 @@ impl Row {
         match self.outcome {
             Outcome::Passed => "\u{2713}",
             Outcome::Missing => "!",
-            Outcome::Failed | Outcome::Unstartable(_) => "\u{2717}",
+            Outcome::Failed | Outcome::Unstartable(_) | Outcome::Mismatched(_) => "\u{2717}",
         }
     }
+}
+
+/// What a probe found.
+enum Found {
+    /// The tool answered, at the pinned release where one is pinned.
+    Yes,
+    /// The tool did not answer at all.
+    No,
+    /// The tool answered and gave a release its pin file does not hold.
+    Wrong(String),
+}
+
+/// The release a pin file holds: its first line that is neither blank nor a
+/// comment.
+pub fn pinned_release(text: &str) -> Option<&str> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+}
+
+/// The first release `text` carries, as three runs of digits separated by dots.
+///
+/// The shape locates it rather than a label, because the words a tool prints
+/// around its release are its own and change between tools.
+fn reported_release(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if !bytes[at].is_ascii_digit() {
+            at += 1;
+            continue;
+        }
+        let mut end = at;
+        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+            end += 1;
+        }
+        let candidate = &text[at..end];
+        if is_release(candidate) {
+            return Some(candidate);
+        }
+        at = end;
+    }
+    None
+}
+
+/// Report whether `release` is three runs of digits separated by dots.
+#[must_use]
+pub fn is_release(release: &str) -> bool {
+    let parts: Vec<&str> = release.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
 }
 
 // ///////////////////////////////////////////////
@@ -336,40 +477,88 @@ impl<'a> Gate<'a> {
         Ok(rows)
     }
 
-    /// Report whether the tool behind `probe` is installed.
-    fn installed(&self, probe: Probe) -> bool {
-        match probe {
-            Probe::Command(command) => self.runner.probe(command),
-            Probe::File(relative) => self.runner.file_exists(relative),
+    /// Ask `run`'s probe what it finds.
+    fn found(&self, run: &Run) -> Found {
+        match run.probe {
+            Probe::Command(command) => {
+                if self.runner.capture(command).is_some() {
+                    Found::Yes
+                } else {
+                    Found::No
+                }
+            }
+            Probe::File(relative) => {
+                if self.runner.read_file(relative).is_some() {
+                    Found::Yes
+                } else {
+                    Found::No
+                }
+            }
+            Probe::Version { command, pin } => self.at_the_pin(run.tool, command, pin),
+        }
+    }
+
+    /// Hold what `command` prints against the release `pin` holds.
+    ///
+    /// An unreadable pin file is a mismatch rather than an absent tool, because
+    /// a gate that cannot say which release it wants has nothing to check.
+    fn at_the_pin(&self, tool: &str, command: &[&str], pin: &str) -> Found {
+        let Some(text) = self.runner.read_file(pin) else {
+            return Found::Wrong(format!(
+                "{pin} cannot be read, so nothing says which {tool}"
+            ));
+        };
+        let Some(wanted) = pinned_release(&text) else {
+            return Found::Wrong(format!("{pin} names no release"));
+        };
+        let Some(printed) = self.runner.capture(command) else {
+            return Found::No;
+        };
+        match reported_release(&printed) {
+            Some(got) if got == wanted => Found::Yes,
+            Some(got) => Found::Wrong(format!("{tool} is {got} and {pin} pins {wanted}")),
+            None => Found::Wrong(format!("{tool} printed no release to hold against {pin}")),
         }
     }
 
     /// Run one step, falling back to its second tool when the first is absent.
     fn run_step(&self, step: &Step, out: &mut dyn Write) -> io::Result<Row> {
-        let (chosen, fell_back) = if self.installed(step.primary.probe) {
-            (&step.primary, false)
-        } else if let Some(fallback) = &step.fallback
-            && self.installed(fallback.probe)
-        {
-            (fallback, true)
-        } else {
-            return Ok(Row {
-                step: step.name,
-                tool: step.primary.tool,
-                install: step.primary.install,
-                outcome: Outcome::Missing,
-                command: String::new(),
-                fell_back: false,
-            });
+        let unrun = |outcome| Row {
+            step: step.name,
+            tool: step.primary.tool,
+            install: step.primary.install,
+            outcome,
+            command: String::new(),
+            fell_back: false,
+        };
+        let (chosen, fell_back) = match self.found(&step.primary) {
+            Found::Yes => (&step.primary, false),
+            Found::Wrong(why) => return Ok(unrun(Outcome::Mismatched(why))),
+            Found::No => match &step.fallback {
+                Some(fallback) if matches!(self.found(fallback), Found::Yes) => (fallback, true),
+                _ => return Ok(unrun(Outcome::Missing)),
+            },
         };
 
-        let line = chosen.command.join(" ");
+        let mut argv: Vec<String> = chosen.command.iter().map(|a| (*a).to_string()).collect();
+        if let Some(resolved) = chosen.resolved {
+            let Some(path) = self.runner.resolve(resolved.tool) else {
+                return Ok(unrun(Outcome::Mismatched(format!(
+                    "{} is not on PATH, so {} would look it up itself",
+                    resolved.tool, chosen.tool
+                ))));
+            };
+            argv.push(format!("{}{}", resolved.flag, path.display()));
+        }
+
+        let line = argv.join(" ");
         writeln!(
             out,
             "\n{}",
             line.if_supports_color(Stream::Stdout, OwoColorize::dimmed)
         )?;
-        let outcome = match self.runner.run(chosen.command) {
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let outcome = match self.runner.run(&borrowed) {
             Ok(Exit::Ok) => Outcome::Passed,
             Ok(Exit::Err) => Outcome::Failed,
             Err(err) => Outcome::Unstartable(err.to_string()),
@@ -404,7 +593,7 @@ fn summarize(out: &mut dyn Write, rows: &[Row]) -> io::Result<()> {
             Outcome::Missing => glyph
                 .if_supports_color(Stream::Stdout, OwoColorize::yellow)
                 .to_string(),
-            Outcome::Failed | Outcome::Unstartable(_) => glyph
+            Outcome::Failed | Outcome::Unstartable(_) | Outcome::Mismatched(_) => glyph
                 .if_supports_color(Stream::Stdout, OwoColorize::red)
                 .to_string(),
         };
@@ -420,7 +609,7 @@ fn summarize(out: &mut dyn Write, rows: &[Row]) -> io::Result<()> {
 
     match rows.iter().find(|row| !row.passed()) {
         None => writeln!(out, "  {} steps passed", rows.len()),
-        Some(row) if row.outcome == Outcome::Missing => {
+        Some(row) if matches!(row.outcome, Outcome::Missing | Outcome::Mismatched(_)) => {
             writeln!(out, "  {} did not run", row.step)?;
             writeln!(out, "  install {} with: {}", row.tool, row.install)
         }
@@ -435,16 +624,33 @@ fn summarize(out: &mut dyn Write, rows: &[Row]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::path::PathBuf;
 
-    use super::{Gate, Outcome, Probe, Row, Run, STEPS, Step};
+    use super::{
+        Gate, Outcome, Probe, Resolved, Row, Run, SHELLCHECK_PIN, STEPS, Step, is_release,
+        pinned_release, reported_release,
+    };
     use crate::runner::{Exit, Runner};
+
+    /// The release `FakeRunner` invents for a pinned tool, in both the pin file
+    /// it serves and the output it gives that tool's probe. The real release
+    /// lives in the real pin file, which no test here reads.
+    const FAKE_RELEASE: &str = "9.9.9";
+
+    /// The directory `FakeRunner` claims every tool resolves into.
+    const FAKE_BIN: &str = "/fake/bin";
 
     /// A `Runner` that spawns nothing and records what it was asked to run.
     struct FakeRunner {
+        /// Tools that resolve nowhere on `PATH`.
+        unresolvable: Vec<String>,
         /// Probe commands that answer, each as one joined string.
         installed: Vec<String>,
-        /// Files that exist, as the relative paths the step table names.
-        present: Vec<String>,
+        /// What an answering probe prints, as the joined command and its
+        /// output.
+        printed: Vec<(String, String)>,
+        /// Files that can be read, as the relative path and its contents.
+        present: Vec<(String, String)>,
         /// Commands that exit non-zero, each as one joined string.
         failing: Vec<String>,
         /// Every command passed to `run`, in order.
@@ -452,41 +658,76 @@ mod tests {
     }
 
     impl FakeRunner {
-        /// Build a runner where every tool answers and every command passes.
+        /// Build a runner where every tool answers at its pinned release and
+        /// every command passes.
         fn all_installed() -> Self {
             let probes = STEPS.iter().flat_map(|step| {
                 std::iter::once(step.primary.probe)
                     .chain(step.fallback.as_ref().map(|run| run.probe))
             });
             let mut installed = Vec::new();
+            let mut printed = Vec::new();
             let mut present = Vec::new();
             for probe in probes {
                 match probe {
                     Probe::Command(command) => installed.push(command.join(" ")),
-                    Probe::File(relative) => present.push(relative.to_string()),
+                    Probe::File(relative) => present.push((relative.to_string(), String::new())),
+                    Probe::Version { command, pin } => {
+                        installed.push(command.join(" "));
+                        printed.push((command.join(" "), format!("version: {FAKE_RELEASE}")));
+                        present.push((pin.to_string(), format!("{FAKE_RELEASE}\n")));
+                    }
                 }
             }
             Self {
+                unresolvable: Vec::new(),
                 installed,
+                printed,
                 present,
                 failing: Vec::new(),
                 ran: RefCell::new(Vec::new()),
             }
         }
 
+        /// Make one tool resolve nowhere on `PATH`.
+        fn unresolvable(mut self, program: &str) -> Self {
+            self.unresolvable.push(program.to_string());
+            self
+        }
+
         /// Drop one tool's probe, so the gate sees that tool as absent.
+        ///
+        /// A pinned tool keeps its pin file, because a gate that cannot read
+        /// the pin is a different failure from one whose tool is not there.
         fn without(mut self, probe: Probe) -> Self {
             match probe {
-                Probe::Command(command) => {
+                Probe::Command(command) | Probe::Version { command, .. } => {
                     let gone = command.join(" ");
                     self.installed.retain(|line| *line != gone);
                 }
-                Probe::File(relative) => self.present.retain(|path| path != relative),
+                Probe::File(relative) => self.present.retain(|(path, _)| path != relative),
             }
             self
         }
 
-        /// Make one command exit non-zero.
+        /// Make one pinned tool answer with `release`.
+        fn reporting(mut self, command: &[&str], release: &str) -> Self {
+            let line = command.join(" ");
+            self.printed.retain(|(probe, _)| *probe != line);
+            self.printed.push((line, format!("version: {release}")));
+            self
+        }
+
+        /// Make one pin file unreadable.
+        fn unpinned(mut self, pin: &str) -> Self {
+            self.present.retain(|(path, _)| path != pin);
+            self
+        }
+
+        /// Make one command exit non-zero, named by the declared command.
+        ///
+        /// A step may append a resolved tool path, so the declared command is a
+        /// prefix of what runs rather than all of it.
         fn failing(mut self, command: &[&str]) -> Self {
             self.failing.push(command.join(" "));
             self
@@ -499,22 +740,41 @@ mod tests {
     }
 
     impl Runner for FakeRunner {
-        fn probe(&self, command: &[&str]) -> bool {
-            self.installed.contains(&command.join(" "))
+        fn capture(&self, command: &[&str]) -> Option<String> {
+            let line = command.join(" ");
+            if !self.installed.contains(&line) {
+                return None;
+            }
+            Some(
+                self.printed
+                    .iter()
+                    .find(|(probe, _)| *probe == line)
+                    .map_or_else(String::new, |(_, output)| output.clone()),
+            )
         }
 
         fn run(&self, command: &[&str]) -> std::io::Result<Exit> {
             let line = command.join(" ");
             self.ran.borrow_mut().push(line.clone());
-            Ok(if self.failing.contains(&line) {
-                Exit::Err
-            } else {
-                Exit::Ok
-            })
+            let failed = self
+                .failing
+                .iter()
+                .any(|declared| line.starts_with(declared.as_str()));
+            Ok(if failed { Exit::Err } else { Exit::Ok })
         }
 
-        fn file_exists(&self, relative: &str) -> bool {
-            self.present.iter().any(|path| path == relative)
+        fn read_file(&self, relative: &str) -> Option<String> {
+            self.present
+                .iter()
+                .find(|(path, _)| path == relative)
+                .map(|(_, contents)| contents.clone())
+        }
+
+        fn resolve(&self, program: &str) -> Option<PathBuf> {
+            self.unresolvable
+                .iter()
+                .all(|name| name != program)
+                .then(|| PathBuf::from(format!("{FAKE_BIN}/{program}")))
         }
     }
 
@@ -538,6 +798,10 @@ mod tests {
                     }
                     Probe::File(relative) => {
                         assert!(!relative.is_empty(), "{}: probe names no file", step.name);
+                    }
+                    Probe::Version { command, pin } => {
+                        assert!(!command.is_empty(), "{}: probe is empty", step.name);
+                        assert!(!pin.is_empty(), "{}: probe names no pin file", step.name);
                     }
                 }
                 assert!(!run.command.is_empty(), "{}: command is empty", step.name);
@@ -567,6 +831,7 @@ mod tests {
                 "machete",
                 "audit",
                 "prettier",
+                "shellcheck",
                 "actionlint",
                 "zizmor"
             ]
@@ -583,7 +848,8 @@ mod tests {
                 "cargo machete crates mods xtask",
                 "cargo audit",
                 "bunx --no-install --bun prettier --check **/*.{md,yml,yaml,json,js,mjs,cjs,ts}",
-                "actionlint -shellcheck= -pyflakes=",
+                "shellcheck .githooks/commit-msg .githooks/pre-push",
+                "actionlint -pyflakes= -shellcheck=/fake/bin/shellcheck",
                 "zizmor --no-progress --offline --strict-collection --config .github/zizmor.yml \
                  .github/workflows .github/dependabot.yml",
             ]
@@ -591,24 +857,214 @@ mod tests {
         assert!(rows.iter().all(Row::passed));
     }
 
-    /// actionlint runs shellcheck and pyflakes when it finds them on `PATH` and
-    /// skips them in silence when it does not. `ubuntu-latest` carries
-    /// shellcheck and `windows-latest` does not, so without the flags the matrix
-    /// legs check different things and the quiet leg reports a pass for an
-    /// analysis it never ran.
+    /// actionlint runs an external analyzer when it finds it on `PATH` and
+    /// skips it in silence when it does not, so a host without one reports a
+    /// pass for an analysis nobody ran.
+    ///
+    /// pyflakes stays off, because no Windows package manager ships it and off
+    /// is the only setting both matrix legs can agree on. shellcheck stays on,
+    /// and the step before actionlint holds it to one release, so the analysis
+    /// actionlint runs is the same on every host.
     #[test]
-    fn actionlint_takes_no_analysis_that_depends_on_what_the_host_has() {
-        let step = STEPS
-            .iter()
-            .find(|step| step.name == "actionlint")
-            .expect("an actionlint step");
+    fn actionlint_runs_shellcheck_and_the_step_before_it_pins_the_release() {
+        let names: Vec<&str> = STEPS.iter().map(|step| step.name).collect();
+        let at = |wanted: &str| {
+            names
+                .iter()
+                .position(|name| *name == wanted)
+                .unwrap_or_else(|| panic!("no {wanted} step"))
+        };
+        let shellcheck = at("shellcheck");
+        let actionlint = at("actionlint");
+        assert!(
+            shellcheck < actionlint,
+            "actionlint runs before the step that holds shellcheck to its release"
+        );
 
-        for flag in ["-shellcheck=", "-pyflakes="] {
-            assert!(
-                step.primary.command.contains(&flag),
-                "{flag} is absent, so that pass is left to whatever the host has: {:?}",
-                step.primary.command
-            );
+        let command = STEPS[actionlint].primary.command;
+        assert!(
+            command.contains(&"-pyflakes="),
+            "pyflakes is left to whatever the host has: {command:?}"
+        );
+        assert!(
+            !command.iter().any(|flag| flag.starts_with("-shellcheck")),
+            "the shellcheck analysis is turned off, so a run: block actionlint \
+             resolves to sh or bash goes unread: {command:?}"
+        );
+
+        let probe = STEPS[shellcheck].primary.probe;
+        let Probe::Version { pin, .. } = probe else {
+            panic!("the shellcheck step probes with {probe:?}, which passes at any release");
+        };
+        assert_eq!(pin, SHELLCHECK_PIN);
+
+        assert_eq!(
+            STEPS[actionlint].primary.resolved,
+            Some(Resolved {
+                flag: "-shellcheck=",
+                tool: "shellcheck",
+            }),
+            "actionlint takes the analyzer by name, so it resolves a binary the gate did not check"
+        );
+    }
+
+    /// actionlint is equally silent over an absent analyzer and one that will
+    /// not execute, so the gate hands it the path it resolved rather than the
+    /// name. A name would be looked up again by a resolver the gate does not
+    /// control, which is the join this step exists to remove.
+    #[test]
+    fn actionlint_is_handed_the_analyzer_path_the_gate_resolved() {
+        let runner = FakeRunner::all_installed();
+        let (rows, _) = gate(&runner);
+
+        assert!(rows.iter().all(Row::passed), "a step did not pass");
+        let line = runner
+            .ran()
+            .into_iter()
+            .find(|line| line.starts_with("actionlint"))
+            .expect("the gate ran actionlint");
+        assert!(
+            line.contains(&format!("-shellcheck={FAKE_BIN}/shellcheck")),
+            "actionlint was not given the resolved analyzer path, got {line:?}"
+        );
+        assert!(
+            !line.contains("-shellcheck= "),
+            "the analyzer flag is empty, which turns the analysis off: {line:?}"
+        );
+    }
+
+    /// An analyzer the gate cannot locate stops the step. Running actionlint
+    /// without the flag would put the lookup back where it started, and a
+    /// failed lookup there is silent.
+    #[test]
+    fn an_analyzer_that_resolves_nowhere_stops_the_step() {
+        let runner = FakeRunner::all_installed().unresolvable("shellcheck");
+        let (rows, text) = gate(&runner);
+
+        let last = rows.last().expect("one row");
+        assert_eq!(last.step, "actionlint");
+        assert!(!last.passed());
+        assert!(
+            matches!(&last.outcome, Outcome::Mismatched(why) if why.contains("shellcheck")),
+            "got {:?}",
+            last.outcome
+        );
+        assert!(
+            !runner
+                .ran()
+                .iter()
+                .any(|line| line.starts_with("actionlint")),
+            "actionlint ran anyway: {:?}",
+            runner.ran()
+        );
+        assert!(text.contains("actionlint did not run"), "got {text}");
+    }
+
+    /// A tool at the wrong release stops the gate before the step that would
+    /// have used it, and the summary says which release is which rather than
+    /// calling the tool absent.
+    #[test]
+    fn a_pinned_tool_at_another_release_stops_the_gate() {
+        let shellcheck = step("shellcheck");
+        let Probe::Version { command, pin } = shellcheck.primary.probe else {
+            panic!("the shellcheck step carries no pinned release");
+        };
+
+        let runner = FakeRunner::all_installed().reporting(command, "1.2.3");
+        let (rows, text) = gate(&runner);
+
+        let last = rows.last().expect("one row");
+        assert_eq!(last.step, "shellcheck");
+        assert_eq!(
+            last.outcome,
+            Outcome::Mismatched(format!("shellcheck is 1.2.3 and {pin} pins {FAKE_RELEASE}"))
+        );
+        assert!(
+            !runner
+                .ran()
+                .iter()
+                .any(|line| line.starts_with("actionlint")),
+            "actionlint ran against an analyzer the pin does not cover: {:?}",
+            runner.ran()
+        );
+        assert!(
+            text.contains("shellcheck did not run"),
+            "the summary does not say the step was skipped, got {text}"
+        );
+        assert!(
+            text.contains(shellcheck.primary.install),
+            "the summary does not say how to install it, got {text}"
+        );
+    }
+
+    /// A pin file nothing can read leaves the gate with no release to hold the
+    /// tool to, which is a refusal rather than a pass.
+    #[test]
+    fn an_unreadable_pin_stops_the_gate() {
+        let Probe::Version { pin, .. } = step("shellcheck").primary.probe else {
+            panic!("the shellcheck step carries no pinned release");
+        };
+
+        let runner = FakeRunner::all_installed().unpinned(pin);
+        let (rows, _) = gate(&runner);
+
+        let last = rows.last().expect("one row");
+        assert_eq!(last.step, "shellcheck");
+        assert!(!last.passed());
+        assert!(
+            matches!(&last.outcome, Outcome::Mismatched(why) if why.contains(pin)),
+            "got {:?}",
+            last.outcome
+        );
+    }
+
+    /// A pin file holds one release past its comments, and a tool prints its
+    /// own among words of its own.
+    #[test]
+    fn the_release_readers_take_the_shapes_they_name() {
+        let pins = [
+            ("0.11.0\n", Some("0.11.0")),
+            ("# a comment\n\n1.4.2\n", Some("1.4.2")),
+            ("  1.4.2  \n", Some("1.4.2")),
+            ("# only comments\n", None),
+            ("", None),
+        ];
+        for (text, expected) in pins {
+            assert_eq!(pinned_release(text), expected, "{text:?}");
+        }
+
+        let outputs = [
+            (
+                "ShellCheck - shell script analysis tool\nversion: 0.11.0\n",
+                Some("0.11.0"),
+            ),
+            ("actionlint 1.7.12\nbuilt with go1.26.1", Some("1.7.12")),
+            ("tool 7 of 9, release 2.0.1", Some("2.0.1")),
+            ("1.4", None),
+            ("no digits here", None),
+            ("", None),
+        ];
+        for (text, expected) in outputs {
+            assert_eq!(reported_release(text), expected, "{text:?}");
+        }
+    }
+
+    /// Three runs of digits and nothing else, so a two-part or four-part number
+    /// is never read as a release.
+    #[test]
+    fn is_release_reads_three_runs_of_digits() {
+        let cases = [
+            ("0.11.0", true),
+            ("1.98.1", true),
+            ("01.04.02", true),
+            ("1.4", false),
+            ("1.4.2.1", false),
+            ("1..2", false),
+            ("1.4.", false),
+            ("", false),
+        ];
+        for (release, expected) in cases {
+            assert_eq!(is_release(release), expected, "{release:?}");
         }
     }
 
@@ -875,8 +1331,8 @@ mod tests {
     fn a_command_that_will_not_start_fails_the_gate() {
         struct Broken;
         impl Runner for Broken {
-            fn probe(&self, _command: &[&str]) -> bool {
-                true
+            fn capture(&self, _command: &[&str]) -> Option<String> {
+                Some(FAKE_RELEASE.to_string())
             }
             fn run(&self, _command: &[&str]) -> std::io::Result<Exit> {
                 Err(std::io::Error::new(
@@ -884,8 +1340,11 @@ mod tests {
                     "program not found",
                 ))
             }
-            fn file_exists(&self, _relative: &str) -> bool {
-                true
+            fn read_file(&self, _relative: &str) -> Option<String> {
+                Some(FAKE_RELEASE.to_string())
+            }
+            fn resolve(&self, program: &str) -> Option<PathBuf> {
+                Some(PathBuf::from(format!("{FAKE_BIN}/{program}")))
             }
         }
 
@@ -983,6 +1442,10 @@ mod tests {
             (Outcome::Failed, false),
             (Outcome::Missing, false),
             (Outcome::Unstartable("no such file".to_string()), false),
+            (
+                Outcome::Mismatched("shellcheck is 1.2.3".to_string()),
+                false,
+            ),
         ];
 
         for (outcome, expected) in cases {
@@ -1029,6 +1492,7 @@ mod tests {
             tool: "prettier",
             probe: Probe::File("node_modules/prettier/package.json"),
             command: &["bunx", "--no-install", "--bun", "prettier", "--check", "."],
+            resolved: None,
             install: "bun install",
         };
 

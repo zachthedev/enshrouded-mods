@@ -53,6 +53,7 @@ impl<'a> Hooks<'a> {
 mod tests {
     use std::cell::RefCell;
     use std::io;
+    use std::path::PathBuf;
 
     use super::{Hooks, INSTALL};
     use crate::runner::{Exit, Runner};
@@ -76,8 +77,8 @@ mod tests {
     }
 
     impl Runner for FakeRunner {
-        fn probe(&self, _command: &[&str]) -> bool {
-            true
+        fn capture(&self, _command: &[&str]) -> Option<String> {
+            Some(String::new())
         }
 
         fn run(&self, command: &[&str]) -> io::Result<Exit> {
@@ -87,8 +88,12 @@ mod tests {
             Ok(self.exit)
         }
 
-        fn file_exists(&self, _relative: &str) -> bool {
-            false
+        fn read_file(&self, _relative: &str) -> Option<String> {
+            None
+        }
+
+        fn resolve(&self, _program: &str) -> Option<PathBuf> {
+            None
         }
     }
 
@@ -125,14 +130,17 @@ mod tests {
     fn install_fails_when_git_will_not_start() {
         struct Broken;
         impl Runner for Broken {
-            fn probe(&self, _command: &[&str]) -> bool {
-                false
+            fn capture(&self, _command: &[&str]) -> Option<String> {
+                None
             }
             fn run(&self, _command: &[&str]) -> io::Result<Exit> {
                 Err(io::Error::new(io::ErrorKind::NotFound, "no git"))
             }
-            fn file_exists(&self, _relative: &str) -> bool {
-                false
+            fn read_file(&self, _relative: &str) -> Option<String> {
+                None
+            }
+            fn resolve(&self, _program: &str) -> Option<PathBuf> {
+                None
             }
         }
 

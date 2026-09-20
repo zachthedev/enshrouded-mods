@@ -18,9 +18,11 @@ cargo command. A C toolchain is needed for MinHook, the hook engine Ember uses.
 `.bun-version` pins. Continuous integration reads the same file.
 
 The gate calls tools that rustup does not install. `.github/cargo-tools` pins
-the crates.io packages among them, and `.github/go-tools` pins the Go programs,
-which need [Go](https://go.dev) to install. The versions live in those files and
-nowhere else, so this installs what continuous integration installs:
+the crates.io packages among them, `.github/go-tools` pins the Go programs,
+which need [Go](https://go.dev) to install, and `.github/shellcheck-version`
+pins [ShellCheck](https://www.shellcheck.net), which is neither. The versions
+live in those files and nowhere else, so this installs what continuous
+integration installs:
 
 ```powershell
 cargo install --locked @(Get-Content .github/cargo-tools | Where-Object { $_ -notmatch '^\s*#' -and $_.Trim() })
@@ -33,6 +35,13 @@ On a shell without PowerShell:
 cargo install --locked $(grep -v '^#' .github/cargo-tools | grep .)
 grep -v '^#' .github/go-tools | grep . | xargs -n 1 go install
 ```
+
+No one command installs ShellCheck on every host, so it comes from whatever that
+host uses: `winget install koalaman.shellcheck` on Windows,
+`apt install shellcheck` or `brew install shellcheck` elsewhere, or the archive
+from [its releases](https://github.com/koalaman/shellcheck/releases). Whichever
+route, the gate refuses any release but the one `.github/shellcheck-version`
+holds, and names both when they disagree.
 
 ## The gate
 
@@ -55,20 +64,31 @@ It runs, in order and stopping at the first failure:
 | `machete`    | Dependencies a crate declares and never uses             |
 | `audit`      | The lockfile against the RustSec advisory database       |
 | `prettier`   | Markup, JavaScript and TypeScript formatting             |
+| `shellcheck` | The git hooks, and the release actionlint's analyzer is  |
 | `actionlint` | Workflow syntax, runner labels and expressions           |
 | `zizmor`     | Workflow pinning, credentials, permissions and injection |
 
 `taplo` reads `.taplo.toml` for the files it covers, and leaves Ember's checkout
 under `vendor/` alone.
 
+`shellcheck` reads the hooks in `.githooks`, and its step is also where the gate
+holds the installed ShellCheck to the release `.github/shellcheck-version` pins.
+That step runs before `actionlint` and the gate stops at the first step that
+does not pass, so `actionlint` is never reached on a host whose ShellCheck the
+pin does not cover.
+
 `actionlint` checks workflow syntax, runner labels and every expression,
 including whether a `needs.<job>.outputs.<name>` names an output that job
-declares. It is a Go program and is installed from `.github/go-tools`. Its
-external analyzers, shellcheck and pyflakes, are off: actionlint runs them when
-it finds them on `PATH` and says nothing when it does not, and `ubuntu-latest`
-carries shellcheck while `windows-latest` does not, so leaving them on would
-have the matrix legs check different things and the quiet leg report a pass for
-an analysis it never ran.
+declares. It is a Go program and is installed from `.github/go-tools`. It runs
+an external analyzer when it finds one on `PATH` and says nothing at all when it
+does not, so an absent analyzer is a pass for a pass nobody ran. pyflakes is
+therefore off, because no Windows package manager ships it and off is the only
+setting both matrix legs agree on. shellcheck is on, and the step before it
+holds the release, so both legs run the same analysis. What that analysis reads
+is the shell in a `run:` block actionlint resolves to sh or bash. A block
+declaring `shell: pwsh`, and every block in the `gate` job, is not shell it can
+read, so the hooks the `shellcheck` step names are the bulk of what is covered
+here.
 
 `zizmor` audits the same files for supply chain and credential problems: an
 action not pinned to a commit, a checkout that leaves the job token behind, a

@@ -4,8 +4,9 @@
 //! and spawns nothing, so no test formats the tree, installs a git hook or
 //! reaches the network.
 
+use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 /// Environment variables that describe this crate rather than the workspace.
@@ -45,11 +46,14 @@ pub enum Exit {
 
 /// Runs commands on behalf of an xtask subcommand.
 pub trait Runner {
-    /// Report whether the tool behind `command` answers.
+    /// Run `command` silently and return what it printed, or `None` when the
+    /// program cannot be started or exits non-zero.
     ///
-    /// `command[0]` is the program. The command's output is discarded, so a
-    /// probe is silent whether or not the tool is there.
-    fn probe(&self, command: &[&str]) -> bool;
+    /// `command[0]` is the program. Standard output and standard error come
+    /// back as one string, because a tool is free to print its release to
+    /// either. A caller that only wants to know whether the tool answers reads
+    /// this as `Some`, so one call covers both questions.
+    fn capture(&self, command: &[&str]) -> Option<String>;
 
     /// Run `command`, letting it write straight to this process's terminal.
     ///
@@ -60,28 +64,35 @@ pub trait Runner {
     /// Returns the operating system error when the program cannot be started.
     fn run(&self, command: &[&str]) -> io::Result<Exit>;
 
-    /// Report whether a file exists at `relative`, resolved from the current
-    /// directory, which is the repository root when the gate runs.
-    fn file_exists(&self, relative: &str) -> bool;
+    /// Read the file at `relative`, resolved from the current directory, which
+    /// is the repository root when the gate runs, or `None` when it cannot be
+    /// read.
+    fn read_file(&self, relative: &str) -> Option<String>;
+
+    /// The path `program` resolves to on `PATH`, or `None` when it is not
+    /// there.
+    ///
+    /// A tool that another tool looks up by name is handed this path instead,
+    /// so the binary the gate checked and the binary that runs are the same one
+    /// by construction rather than by two lookups agreeing.
+    fn resolve(&self, program: &str) -> Option<PathBuf>;
 }
 
 /// The `Runner` that spawns real child processes.
 pub struct Processes;
 
 impl Runner for Processes {
-    fn probe(&self, command: &[&str]) -> bool {
-        let Some((program, args)) = command.split_first() else {
-            return false;
-        };
+    fn capture(&self, command: &[&str]) -> Option<String> {
+        let (program, args) = command.split_first()?;
         let mut child = Command::new(program);
         scrub(&mut child);
-        child
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+        let output = child.args(args).stdin(Stdio::null()).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let mut printed = String::from_utf8_lossy(&output.stdout).into_owned();
+        printed.push_str(&String::from_utf8_lossy(&output.stderr));
+        Some(printed)
     }
 
     fn run(&self, command: &[&str]) -> io::Result<Exit> {
@@ -98,8 +109,12 @@ impl Runner for Processes {
         })
     }
 
-    fn file_exists(&self, relative: &str) -> bool {
-        Path::new(relative).is_file()
+    fn read_file(&self, relative: &str) -> Option<String> {
+        fs::read_to_string(relative).ok()
+    }
+
+    fn resolve(&self, program: &str) -> Option<PathBuf> {
+        which::which(program).ok()
     }
 }
 

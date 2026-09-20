@@ -72,3 +72,6 @@ reach a player. With it off the mod still enforces scope; it just says nothing.
 ## License
 
 MIT. See `LICENSE`.
+
+Manifests carry the brand, `ZachTheDev`. The legal name belongs to the copyright
+line in `LICENSE` and nowhere else.

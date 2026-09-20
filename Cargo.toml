@@ -10,7 +10,7 @@ edition = "2024"
 rust-version = "1.98"
 license = "MIT"
 repository = "https://github.com/zachthedev/enshrouded-mods"
-authors = ["Zach <me@zachthe.dev>"]
+authors = ["ZachTheDev <me@zachthe.dev>"]
 
 [workspace.dependencies]
 mods-common = { version = "0.0.0", path = "crates/mods-common" }
@@ -31,6 +31,10 @@ serde_json = "1.0.151"
 thiserror = "2.0.20"
 toml = "1.1.6"
 tracing = "0.1.44"
+# Resolves a program name on PATH the way the standard library spawner does.
+# The gate hands the resolved path to actionlint, so the binary it checked and
+# the binary actionlint analyzes with are the same one by construction.
+which = "8.0.6"
 # A YAML parser, for the tests that read the Dependabot, zizmor and workflow
 # configuration. They read UTF-8 text, so the encoding detection stays out.
 yaml-rust2 = { version = "0.13.0", default-features = false }
