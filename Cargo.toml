@@ -5,7 +5,7 @@ members = ["crates/mods-common", "mods/private-chests", "xtask"]
 exclude = ["vendor"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
@@ -13,11 +13,16 @@ repository = "https://github.com/zachthedev/enshrouded-mods"
 authors = ["ZachTheDev <me@zachthe.dev>"]
 
 [workspace.dependencies]
-mods-common = { version = "0.0.0", path = "crates/mods-common" }
+# mods-common reaches no registry, so it carries no version requirement.
+# release-plz holds the crate back from release and rewrites no requirement for
+# it, while the shared workspace version moves on every release.
+mods-common = { path = "crates/mods-common" }
 
 # Ember is a separate repository. Releases pin published versions; local work
 # builds against the submodule in vendor/, which is where this path points. A
 # mod that reaches the engine or the game layer adds that crate here beside it.
+# Cargo enforces this requirement against the vendored crate, so it tracks the
+# version the submodule is pinned to rather than Ember's newest.
 ember-sdk = { version = "0.0.0", path = "vendor/enshrouded-ember/crates/ember-sdk" }
 
 anyhow = "1.0.104"
