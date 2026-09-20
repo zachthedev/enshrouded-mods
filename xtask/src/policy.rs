@@ -944,6 +944,107 @@ fn build_directory_ids(text: &str) -> Vec<String> {
         .collect()
 }
 
+// ///////////////////////////////////////////////
+// Workflow scripts
+// ///////////////////////////////////////////////
+
+/// The lines of a PowerShell script that run something, with comment lines
+/// dropped and each line trimmed.
+fn script_lines(script: &str) -> impl Iterator<Item = &str> {
+    script
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+}
+
+/// The variable a script assigns from `Get-Content <path>`, if one.
+///
+/// A path named in a comment assigns nothing, and neither does a path a script
+/// only prints, so nothing but a read satisfies this.
+fn pin_file_variable(script: &str, path: &str) -> Option<String> {
+    script_lines(script).find_map(|line| {
+        let (left, right) = line.split_once('=')?;
+        let name = left.trim().strip_prefix('$')?;
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return None;
+        }
+        let mut words = right.split_whitespace();
+        (words.next() == Some("Get-Content") && words.next() == Some(path))
+            .then(|| name.to_string())
+    })
+}
+
+/// Every `foreach` binding a script makes, as the element variable and the
+/// collection variable it walks, both without their `$`.
+fn foreach_bindings(script: &str) -> Vec<(String, String)> {
+    script_lines(script)
+        .filter_map(|line| {
+            let open = line
+                .strip_prefix("foreach")?
+                .trim_start()
+                .strip_prefix('(')?;
+            let head = open.split(')').next()?;
+            let mut words = head.split_whitespace();
+            let element = words.next()?.strip_prefix('$')?;
+            if words.next()? != "in" {
+                return None;
+            }
+            let collection = words.next()?.strip_prefix('$')?;
+            Some((element.to_string(), collection.to_string()))
+        })
+        .collect()
+}
+
+/// The arguments each `program` invocation in a script carries.
+///
+/// `program` may be several words, so `go install` matches as one name rather
+/// than as `go` with `install` read as its first argument.
+fn invocations<'a>(script: &'a str, program: &str) -> Vec<Vec<&'a str>> {
+    script_lines(script)
+        .filter_map(|line| {
+            let rest = line.strip_prefix(program)?;
+            rest.starts_with(char::is_whitespace)
+                .then(|| rest.split_whitespace().collect())
+        })
+        .collect()
+}
+
+/// Every step output a PowerShell script writes, as the output's name and the
+/// value written.
+fn step_outputs(script: &str) -> Vec<(String, String)> {
+    script_lines(script)
+        .filter(|line| line.contains("$env:GITHUB_OUTPUT"))
+        .filter_map(|line| {
+            let written = line.split(">>").next()?.trim();
+            let body = written.strip_prefix('"')?.strip_suffix('"')?;
+            let (name, value) = body.split_once('=')?;
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+/// The `steps.<id>.outputs.<name>` a workflow expression reads, if that is all
+/// it reads.
+///
+/// An input carrying anything beside the expression is a literal in part, which
+/// is what this refuses.
+fn step_output_reference(input: &str) -> Option<(String, String)> {
+    let body = input.trim().strip_prefix("${{")?.strip_suffix("}}")?.trim();
+    let mut parts = body.split('.');
+    if parts.next()? != "steps" {
+        return None;
+    }
+    let id = parts.next()?;
+    if parts.next()? != "outputs" {
+        return None;
+    }
+    let name = parts.next()?;
+    if parts.next().is_some() || id.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some((id.to_string(), name.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -955,9 +1056,10 @@ mod tests {
 
     use super::{
         XTASK, bare_references, build_directory_ids, cargo_install_package, code_span_lists,
-        ember_names, ember_variable_literals, first_column, first_column_links, holds_version,
-        is_exact_release, mentions, prose_files, prose_kind, prose_paragraphs, reference_problem,
-        repo_root, rust_sources, section, stated_counts, without_placeholders, workflow_uses,
+        ember_names, ember_variable_literals, first_column, first_column_links, foreach_bindings,
+        holds_version, invocations, is_exact_release, mentions, pin_file_variable, prose_files,
+        prose_kind, prose_paragraphs, reference_problem, repo_root, rust_sources, section,
+        stated_counts, step_output_reference, step_outputs, without_placeholders, workflow_uses,
         workspace_inherited, xtask_references,
     };
 
@@ -1157,9 +1259,9 @@ mod tests {
             .position(|step| {
                 step["run"]
                     .as_str()
-                    .is_some_and(|run| run.contains(".github/go-tools"))
+                    .is_some_and(|run| pin_file_variable(run, ".github/go-tools").is_some())
             })
-            .expect("a gate step installs from .github/go-tools");
+            .expect("a gate step reads .github/go-tools into a variable");
         assert!(
             setup < install,
             "setup-go runs after the step that needs its Go"
@@ -1348,15 +1450,88 @@ mod tests {
         }
     }
 
-    /// The workflow reads the pinned files rather than carrying its own copy of
-    /// the versions.
-    #[test]
-    fn ci_reads_the_pinned_tool_files() {
-        let text = read(".github/workflows/ci.yml");
+    /// The one gate step whose script reads `pin`, as its `id` and its script.
+    ///
+    /// The step is found by the read itself. A step naming the file in a
+    /// comment reads nothing, so it is not this one.
+    fn gate_step_reading(pin: &str) -> (String, String) {
+        let workflow = yaml(".github/workflows/ci.yml");
+        let steps = workflow["jobs"]["gate"]["steps"]
+            .as_vec()
+            .expect("the gate job lists steps")
+            .clone();
+        let found: Vec<(String, String)> = steps
+            .iter()
+            .filter_map(|step| {
+                let script = step["run"].as_str()?;
+                pin_file_variable(script, pin)?;
+                let id = step["id"].as_str().unwrap_or("").to_string();
+                Some((id, script.to_string()))
+            })
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "{} gate steps read {pin} into a variable, and the check wants the one that does",
+            found.len()
+        );
+        found.into_iter().next().expect("one step")
+    }
 
-        for file in [".github/cargo-tools", ".github/go-tools"] {
-            assert!(text.contains(file), "the workflow does not read {file}");
-        }
+    /// Every pinned release the workflow installs reaches the command that
+    /// installs it through a variable the same script sets from that release's
+    /// pin file.
+    ///
+    /// Reading the workflow for a pin file's name proves nothing. A comment
+    /// naming the file satisfies that while the executed line installs a
+    /// release of its own, and the two drift with nothing to notice. The tool
+    /// names are spelled out, because a bare release carries none; the releases
+    /// never are.
+    #[test]
+    fn every_release_the_workflow_installs_is_read_from_its_pin_file() {
+        let workflow = yaml(".github/workflows/ci.yml");
+        let steps = workflow["jobs"]["gate"]["steps"]
+            .as_vec()
+            .expect("the gate job lists steps");
+
+        let install = steps
+            .iter()
+            .find(|step| {
+                step["uses"]
+                    .as_str()
+                    .is_some_and(|uses| uses.starts_with("taiki-e/install-action@"))
+            })
+            .expect("the gate job installs tools with taiki-e/install-action");
+        let input = install["with"]["tool"]
+            .as_str()
+            .expect("install-action takes a tool list");
+        let (id, output) = step_output_reference(input).unwrap_or_else(|| {
+            panic!("install-action takes {input:?}, which is not one step output on its own")
+        });
+
+        let (reader, script) = gate_step_reading(".github/cargo-tools");
+        assert_eq!(
+            reader, id,
+            "install-action reads the {id} step and {reader} is the step that reads the pin file"
+        );
+        let written = step_outputs(&script)
+            .into_iter()
+            .find(|(name, _)| *name == output)
+            .map_or_else(
+                || panic!("the {id} step writes no {output} output"),
+                |(_, value)| value,
+            );
+
+        let pin = ".github/cargo-tools";
+        let variable = pin_file_variable(&script, pin).unwrap_or_else(|| {
+            panic!("the {id} step sets no variable from {pin}, so nothing ties the two")
+        });
+        assert!(
+            written.contains(&format!("${variable}")),
+            "the {output} output is {written:?}, which never reads the ${variable} that holds {pin}"
+        );
+
+        let text = read(".github/workflows/ci.yml");
         for (tool, version) in pinned_tools() {
             assert!(
                 !text.contains(&format!("{tool}@{version}")),
@@ -1367,6 +1542,123 @@ mod tests {
             assert!(
                 !text.contains(&entry),
                 "the workflow carries its own copy of {entry}"
+            );
+        }
+    }
+
+    /// `go install` runs the entries the pin file holds, through a variable the
+    /// same script sets from that file, never a coordinate written into the
+    /// script beside it.
+    #[test]
+    fn the_go_tool_install_runs_only_what_the_pin_file_holds() {
+        let (_, script) = gate_step_reading(".github/go-tools");
+        let held = pin_file_variable(&script, ".github/go-tools").expect("the step reads the file");
+        let bound = foreach_bindings(&script);
+
+        let calls = invocations(&script, "go install");
+        assert!(
+            !calls.is_empty(),
+            "the step runs no `go install`:\n{script}"
+        );
+        for arguments in calls {
+            assert_eq!(
+                arguments.len(),
+                1,
+                "`go install` takes {arguments:?} rather than one variable"
+            );
+            let read = arguments[0]
+                .strip_prefix('$')
+                .unwrap_or_else(|| panic!("`go install` takes the literal {:?}", arguments[0]));
+            let walked = bound
+                .iter()
+                .find(|(element, _)| element == read)
+                .map_or_else(
+                    || panic!("`go install` reads ${read}, which no foreach binds"),
+                    |(_, collection)| collection.as_str(),
+                );
+            assert_eq!(
+                walked, held,
+                "`go install` walks ${walked}, and ${held} is what holds .github/go-tools"
+            );
+        }
+    }
+
+    /// The shapes the script readers take, and the ones they refuse. A comment
+    /// and a bare mention are the two that a `contains` check cannot tell from
+    /// a read.
+    #[test]
+    fn the_script_readers_take_the_shapes_they_name() {
+        let pins = [
+            (
+                "$tools = Get-Content .github/go-tools |\n  Where-Object { $_ }",
+                Some("tools"),
+            ),
+            ("$t = Get-Content .github/go-tools", Some("t")),
+            ("# reads .github/go-tools\n$t = @('a@1')", None),
+            ("Write-Output .github/go-tools", None),
+            ("$t = Get-Content .github/other-tools", None),
+            // The path is the word after Get-Content, never anywhere on the
+            // line, so a trailing comment naming the wanted file does not make
+            // a read of another one count as a read of it.
+            (
+                "$t = Get-Content .github/other-tools # .github/go-tools",
+                None,
+            ),
+            (
+                "$t = Get-Content .github/go-tools # still a read",
+                Some("t"),
+            ),
+            ("$t = Get-Content", None),
+            ("", None),
+        ];
+        for (script, expected) in pins {
+            assert_eq!(
+                pin_file_variable(script, ".github/go-tools").as_deref(),
+                expected,
+                "{script:?}"
+            );
+        }
+
+        assert_eq!(
+            foreach_bindings("foreach ($tool in $tools) {"),
+            [("tool".to_string(), "tools".to_string())]
+        );
+        assert!(foreach_bindings("# foreach ($tool in $tools)").is_empty());
+
+        assert_eq!(invocations("go install $tool", "go install"), [["$tool"]]);
+        assert_eq!(
+            invocations("  go install a@1\n# go install b@2", "go install"),
+            [["a@1"]]
+        );
+        assert!(invocations("go installer x", "go install").is_empty());
+
+        assert_eq!(
+            step_outputs("\"list=$($tools -join ',')\" >> $env:GITHUB_OUTPUT"),
+            [("list".to_string(), "$($tools -join ',')".to_string())]
+        );
+        assert!(step_outputs("\"list=a,b\" >> $env:GITHUB_PATH").is_empty());
+
+        let references = [
+            (
+                "${{ steps.pinned-tools.outputs.list }}",
+                Some(("pinned-tools", "list")),
+            ),
+            (
+                "${{steps.pinned-tools.outputs.list}}",
+                Some(("pinned-tools", "list")),
+            ),
+            ("${{ steps.pinned-tools.outputs.list }},extra", None),
+            ("cargo-nextest@0.9.145", None),
+            ("${{ env.TOOLS }}", None),
+            ("${{ steps.pinned-tools.outputs }}", None),
+        ];
+        for (input, expected) in references {
+            assert_eq!(
+                step_output_reference(input)
+                    .as_ref()
+                    .map(|(id, name)| (id.as_str(), name.as_str())),
+                expected,
+                "{input:?}"
             );
         }
     }
