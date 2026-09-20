@@ -8,60 +8,60 @@ version: 2
 # is a decision rather than a bump.
 updates:
   - package-ecosystem: cargo
-    directory: "/"
+    directory: '/'
     schedule:
       interval: weekly
     cooldown:
       default-days: 3
     groups:
       cargo:
-        patterns: ["*"]
-        update-types: ["patch", "minor"]
-    labels: ["dependencies", "cargo"]
+        patterns: ['*']
+        update-types: ['patch', 'minor']
+    labels: ['dependencies', 'cargo']
     open-pull-requests-limit: 4
     commit-message:
-      prefix: "chore(deps)"
+      prefix: 'chore(deps)'
 
   - package-ecosystem: github-actions
-    directory: "/"
+    directory: '/'
     schedule:
       interval: weekly
     cooldown:
       default-days: 3
     groups:
       actions:
-        patterns: ["*"]
-        update-types: ["patch", "minor"]
-    labels: ["dependencies", "ci"]
+        patterns: ['*']
+        update-types: ['patch', 'minor']
+    labels: ['dependencies', 'ci']
     open-pull-requests-limit: 3
     commit-message:
-      prefix: "chore(ci)"
+      prefix: 'chore(ci)'
 
   - package-ecosystem: bun
-    directory: "/"
+    directory: '/'
     schedule:
       interval: weekly
     cooldown:
       default-days: 3
     groups:
       bun:
-        patterns: ["*"]
-        update-types: ["patch", "minor"]
-    labels: ["dependencies", "bun"]
+        patterns: ['*']
+        update-types: ['patch', 'minor']
+    labels: ['dependencies', 'bun']
     open-pull-requests-limit: 3
     commit-message:
-      prefix: "chore(deps)"
+      prefix: 'chore(deps)'
 
   # Ember, vendored at vendor/enshrouded-ember. Never grouped: this pin is the
   # SDK the mods here compile against, so moving it changes what the mod does,
   # and it is read on its own.
   - package-ecosystem: gitsubmodule
-    directory: "/"
+    directory: '/'
     schedule:
       interval: weekly
     cooldown:
       default-days: 3
-    labels: ["dependencies", "ember"]
+    labels: ['dependencies', 'ember']
     open-pull-requests-limit: 1
     commit-message:
-      prefix: "chore(deps)"
+      prefix: 'chore(deps)'

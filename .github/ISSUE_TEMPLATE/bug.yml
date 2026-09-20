@@ -1,7 +1,7 @@
 name: Bug
 description: A mod here did something other than what the documentation says.
-title: "bug: "
-labels: ["bug"]
+title: 'bug: '
+labels: ['bug']
 body:
   - type: markdown
     attributes:
@@ -46,7 +46,7 @@ body:
       description: >
         The `buildid` line in `steamapps/appmanifest_2278520.acf` beside your
         server. A finding is worthless without the build behind it.
-      placeholder: "23178631"
+      placeholder: '23178631'
     validations:
       required: true
   - type: input
@@ -57,7 +57,7 @@ body:
         The number in the first 512 bytes of `enshrouded_server.kfc`, beside the
         branch path and the build date. The server prints it at startup as `Game
         Version (SVN)`.
-      placeholder: "1024233"
+      placeholder: '1024233'
     validations:
       required: true
   - type: input
@@ -65,7 +65,7 @@ body:
     attributes:
       label: Ember and mod versions
       description: The startup report names both.
-      placeholder: "ember 0.1.0, private-chests 0.1.0"
+      placeholder: 'ember 0.1.0, private-chests 0.1.0'
     validations:
       required: true
   - type: textarea
@@ -110,8 +110,8 @@ body:
         written back from the defaults. From a checkout, `cargo xtask server
         seed` then `cargo xtask server run` gives you the same server.
       options:
-        - "Yes"
-        - "No, it stops"
+        - 'Yes'
+        - 'No, it stops'
         - Not checked
     validations:
       required: true
