@@ -2632,6 +2632,16 @@ unix-taken.workspace = true
             &["server", "..."],
             &["<command>"],
             &["check", "--help"],
+            &[
+                "package",
+                "--mod",
+                "private-chests",
+                "--tag",
+                "private-chests-v0.1.0",
+                "--out",
+                "dist",
+            ],
+            &["package", "--ember-loader", "ember/POWRPROF.dll"],
         ];
         for words in accepted {
             let words: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
@@ -2639,7 +2649,8 @@ unix-taken.workspace = true
         }
 
         let refused: &[(&[&str], &str)] = &[
-            (&["package"], "package"),
+            (&["publish"], "publish"),
+            (&["package", "--sign"], "--sign"),
             (&["hooks", "remove"], "remove"),
             (&["check", "--force"], "--force"),
             (&["scopes", "extra"], "`extra`"),

@@ -1,12 +1,13 @@
 //! Repository automation, run as `cargo xtask <command>`.
 //!
 //! `check` is the gate, and `pins` is its first step run alone. `hooks install`
-//! points git at `.githooks`. `server` and
-//! `schema` forward to Ember's xtask through the submodule, because those drive
-//! Keen's binary rather than anything this repository owns.
+//! points git at `.githooks`. `package` builds a mod's release bundle. `server`
+//! and `schema` forward to Ember's xtask through the submodule, because those
+//! drive Keen's binary rather than anything this repository owns.
 
 pub mod check;
 mod hooks;
+pub mod package;
 pub mod pins;
 #[cfg(test)]
 mod policy;
@@ -57,6 +58,22 @@ enum Command {
     Hooks {
         #[command(subcommand)]
         action: HookAction,
+    },
+    /// Build a mod's release bundle: one archive and its digest file.
+    Package {
+        /// The mod to bundle, by its package name.
+        #[arg(long = "mod", value_name = "MOD")]
+        subject: String,
+        /// The release tag the archive is named for.
+        #[arg(long, value_name = "TAG")]
+        tag: String,
+        /// The directory the archive and its digest file are written into.
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+        /// A loader already on disk, with its SHA256SUMS beside it, in place of
+        /// the download from Ember's release.
+        #[arg(long, value_name = "PATH")]
+        ember_loader: Option<PathBuf>,
     },
     /// Drive the development server through Ember's xtask.
     Server {
@@ -129,6 +146,21 @@ fn dispatch() -> anyhow::Result<ExitCode> {
             action: HookAction::Install,
         } => {
             hooks::Hooks::new(&runner).install(&mut out)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Package {
+            subject,
+            tag,
+            out: into,
+            ember_loader,
+        } => {
+            let request = package::Request {
+                subject,
+                tag,
+                out: into,
+                loader: ember_loader,
+            };
+            package::run(&runner, &repo_root(), &request, &mut out)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Server { args } => {
