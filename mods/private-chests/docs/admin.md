@@ -1,7 +1,7 @@
 # Running private-chests
 
-For server admins. [docs/install.md](install.md) covers getting the files in
-place.
+For server admins. [docs/install.md](../../../docs/install.md) covers getting
+the files in place.
 
 ## Scopes
 

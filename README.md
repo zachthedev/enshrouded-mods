@@ -30,7 +30,8 @@ scope, so a craft draws only from containers the crafter can reach.
 
 - Private, Team and Public scopes. A station spends only from its own scope, so
   a Public station spends communal stock and a Private one spends its owner's.
-- Each behavior is its own setting, and [docs/admin.md](docs/admin.md#settings)
+- Each behavior is its own setting, and
+  [the mod's own documentation](mods/private-chests/docs/admin.md#settings)
   lists every one with its default.
 - Admins are a user group from `enshrouded_server.json`, plus an account list.
   The mod never writes that file.
@@ -45,7 +46,7 @@ reach a player. With it off the mod still enforces scope; it just says nothing.
 | File                               | For                                        |
 | ---------------------------------- | ------------------------------------------ |
 | [docs/install.md](docs/install.md) | Server admins installing the mod           |
-| [docs/admin.md](docs/admin.md)     | The mod's settings and the chat verbs      |
+| [docs/mods.md](docs/mods.md)       | What each mod does, and where its docs are |
 | [docs/dev.md](docs/dev.md)         | The first run, end to end                  |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | The gate, the commit convention, the hooks |
 
