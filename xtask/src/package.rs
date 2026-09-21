@@ -912,9 +912,8 @@ mod tests {
 
     use super::{
         Bundle, EMBER, EMBER_SDK, LOADER, Local, MODS, MODS_DIRECTORY, Mod, Release, Request, SUMS,
-        Source, TARGET, Tag, UNRELEASED, artifact, build_command, bundle, digest, ember_release,
-        ember_tag, ember_version, mods, read_mod, recorded_digest, refuse_escaping, run, sums_line,
-        verified,
+        Source, TARGET, Tag, artifact, build_command, bundle, digest, ember_release, ember_tag,
+        ember_version, mods, read_mod, recorded_digest, refuse_escaping, run, sums_line, verified,
     };
     use crate::runner::{Exit, Runner};
 
@@ -1538,6 +1537,10 @@ version = \"0.4.2\"
     /// A path dependency resolves to a placeholder no release carries, and the
     /// release lookup refuses it there rather than sending it to a release
     /// lookup that can only report a missing tag.
+    ///
+    /// The placeholder is spelled out here rather than taken from the constant,
+    /// so the case pins which version is refused instead of agreeing with
+    /// whatever the constant says today.
     #[test]
     fn the_release_lookup_refuses_the_placeholder_a_path_dependency_carries() {
         let named = |version: &str| {
@@ -1549,9 +1552,9 @@ version = \"0.4.2\"
             "v0.4.2"
         );
 
-        let err = ember_release(&named(UNRELEASED)).expect_err("the placeholder is refused");
+        let err = ember_release(&named("0.0.0")).expect_err("the placeholder is refused");
         let said = format!("{err:#}");
-        assert!(said.contains(UNRELEASED), "got {said}");
+        assert!(said.contains("0.0.0"), "got {said}");
         assert!(
             said.contains("--ember-loader"),
             "the refusal does not say what to do instead: {said}"
@@ -1731,13 +1734,22 @@ version = \"0.4.2\"
     /// The build names the shipped target, the release profile and the
     /// lockfile, and it names its own target directory so the artifact it reads
     /// is the artifact cargo wrote.
+    ///
+    /// The triple is spelled out rather than taken from the constant, so a
+    /// constant that drifts fails here instead of agreeing with itself.
     #[test]
     fn the_build_names_the_shipped_target_and_its_own_target_directory() {
         let target = PathBuf::from("Z:/checkout/target");
         let command = build_command("private-chests", &target);
 
         assert_eq!(command[0], "cargo");
-        for expected in ["--release", "--locked", "--lib", "--target", TARGET] {
+        for expected in [
+            "--release",
+            "--locked",
+            "--lib",
+            "--target",
+            "x86_64-pc-windows-msvc",
+        ] {
             assert!(
                 command.iter().any(|word| word == expected),
                 "got {command:?}"
@@ -1760,6 +1772,10 @@ version = \"0.4.2\"
     /// The download names the release by tag, names Ember's repository, and
     /// takes both assets. A download of the library alone would leave the
     /// digest check with nothing to read.
+    ///
+    /// The repository and both asset names are spelled out rather than taken
+    /// from the constants, so a constant that drifts fails here instead of
+    /// agreeing with itself.
     #[test]
     fn the_download_names_the_release_and_takes_both_assets() {
         let into = PathBuf::from("Z:/staging");
@@ -1773,14 +1789,17 @@ version = \"0.4.2\"
                 .find(|pair| pair[0] == flag)
                 .map(|pair| pair[1].clone())
         };
-        assert_eq!(value("--repo"), Some(EMBER.to_string()));
+        assert_eq!(
+            value("--repo"),
+            Some("zachthedev/enshrouded-ember".to_string())
+        );
         assert_eq!(value("--dir"), Some(into.to_string_lossy().into_owned()));
         let patterns: Vec<&String> = command
             .windows(2)
             .filter(|pair| pair[0] == "--pattern")
             .map(|pair| &pair[1])
             .collect();
-        assert_eq!(patterns, vec![LOADER, SUMS]);
+        assert_eq!(patterns, vec!["POWRPROF.dll", "SHA256SUMS"]);
     }
 
     // ///// The command end to end /////
