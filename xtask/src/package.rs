@@ -1911,16 +1911,23 @@ version = \"0.4.2\"
         );
     }
 
-    /// The download route refuses the placeholder version rather than asking a
-    /// release lookup for a tag no release carries.
+    /// The download route refuses a placeholder version, and refuses it before
+    /// it builds anything, rather than asking a release lookup for a tag no
+    /// release carries.
     ///
-    /// This reads the repository's own lockfile, where `ember-sdk` resolves
-    /// through the vendored checkout. Task #73 moves that requirement to a
-    /// published version, and this case is where that move shows up.
+    /// The lockfile is written into the sandbox rather than taken from the copy
+    /// `workspace` lays down: the case has to present a placeholder whatever
+    /// version this repository's own requirement resolves. The version is the
+    /// literal cargo writes for a workspace that declares no release, so the
+    /// case does not agree with the constant it is checking.
     #[test]
     fn the_download_route_refuses_a_version_no_release_carries() {
         let home = sandbox("placeholder");
         let root = workspace(home.path());
+        put(
+            &root.join("Cargo.lock"),
+            format!("[[package]]\nname = \"{EMBER_SDK}\"\nversion = \"0.0.0\"\n").as_bytes(),
+        );
         let runner = BuildingRunner {
             artifact: artifact(&root.join("target"), "private_chests.dll"),
             bytes: Some(LIBRARY_BYTES.to_vec()),
@@ -1938,7 +1945,7 @@ version = \"0.4.2\"
             .expect_err("a placeholder version is refused");
 
         let said = format!("{err:#}");
-        assert!(said.contains(UNRELEASED), "got {said}");
+        assert!(said.contains("0.0.0"), "got {said}");
         assert!(
             said.contains("--ember-loader"),
             "the refusal does not say what to do instead: {said}"
