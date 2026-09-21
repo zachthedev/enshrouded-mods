@@ -23,7 +23,7 @@ mods-common = { path = "crates/mods-common" }
 # mod that reaches the engine or the game layer adds that crate here beside it.
 # Cargo enforces this requirement against the vendored crate, so it tracks the
 # version the submodule is pinned to rather than Ember's newest.
-ember-sdk = { version = "0.0.0", path = "vendor/enshrouded-ember/crates/ember-sdk" }
+ember-sdk = { version = "0.1", path = "vendor/enshrouded-ember/crates/ember-sdk" }
 
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
