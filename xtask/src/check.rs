@@ -1009,20 +1009,23 @@ mod tests {
     /// The probe and the command have to open with the same program for that to
     /// hold: the gate substitutes the resolved path into both, and a probe
     /// naming another program would answer for a binary no step runs.
+    ///
+    /// The installer is spelled out rather than taken from the constant, so the
+    /// command a contributor is told to run is held to what mise offers.
     #[test]
     fn every_mise_tool_probes_and_runs_the_same_program() {
         for step in STEPS {
             for run in std::iter::once(&step.primary).chain(step.fallback.as_ref()) {
                 if !run.mise {
                     assert_ne!(
-                        run.install, MISE_INSTALL,
+                        run.install, "mise install",
                         "{}: {} installs with mise and does not resolve through it",
                         step.name, run.tool
                     );
                     continue;
                 }
                 assert_eq!(
-                    run.install, MISE_INSTALL,
+                    run.install, "mise install",
                     "{}: {} resolves through mise and names another installer",
                     step.name, run.tool
                 );
