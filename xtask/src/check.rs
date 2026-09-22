@@ -240,35 +240,15 @@ pub const STEPS: &[Step] = &[
         fallback: None,
     },
     Step {
-        name: "shellcheck",
-        primary: Run {
-            tool: "shellcheck",
-            mise: true,
-            // The release, not the presence. A stale install directory answers
-            // under the name mise resolves while carrying another release, and
-            // a different release changes which findings actionlint reports
-            // while every step still passes. This step runs before actionlint,
-            // and the gate stops at the first step that does not pass, so
-            // actionlint is never reached on a host the pin does not cover.
-            probe: Probe::Version(&["shellcheck", "--version"]),
-            // The git hooks are the POSIX shell this repository owns outside a
-            // workflow. actionlint reaches a `run:` block only where it
-            // resolves the shell to sh or bash, which no block in the gate job
-            // is, so these two files are the bulk of what the analysis covers.
-            // A test holds this list equal to what `.githooks` holds, because a
-            // command spawns with no shell to expand a glob.
-            command: &["shellcheck", ".githooks/commit-msg", ".githooks/pre-push"],
-            resolved: None,
-            install: MISE_INSTALL,
-        },
-        fallback: None,
-    },
-    Step {
         name: "actionlint",
         primary: Run {
             tool: "actionlint",
             mise: true,
-            probe: Probe::Command(&["actionlint", "-version"]),
+            // The release, not the presence. A stale install directory answers
+            // under the name mise resolves while carrying another release, and
+            // a different release changes which findings it reports while the
+            // step still passes.
+            probe: Probe::Version(&["actionlint", "-version"]),
             // No path argument. actionlint resolves the enclosing git
             // repository and reads its `.github/workflows`, which leaves
             // Ember's checkout under vendor/ to Ember's own gate. It takes
@@ -281,8 +261,8 @@ pub const STEPS: &[Step] = &[
             // No Windows package manager ships pyflakes, which leaves off as
             // the only setting both matrix legs can agree on.
             //
-            // shellcheck stays on, and the step before this one holds it to one
-            // release on every host, so both legs run the same analysis.
+            // shellcheck stays on, resolved below to the binary mise installed at
+            // the pinned release, so both legs run the same analysis.
             command: &["actionlint", "-pyflakes="],
             // shellcheck arrives as a resolved path rather than a name.
             // actionlint is equally silent over an analyzer that is absent and
@@ -1082,7 +1062,6 @@ mod tests {
                 "machete",
                 "audit",
                 "prettier",
-                "shellcheck",
                 "actionlint",
                 "zizmor"
             ]
@@ -1099,7 +1078,6 @@ mod tests {
                 "/fake/bin/cargo-machete crates mods xtask",
                 "/fake/bin/cargo-audit audit",
                 "bunx --no-install --bun prettier --check **/*.{md,yml,yaml,json,js,mjs,cjs,ts}",
-                "/fake/bin/shellcheck .githooks/commit-msg .githooks/pre-push",
                 "/fake/bin/actionlint -pyflakes= -shellcheck=/fake/bin/shellcheck",
                 "/fake/bin/zizmor --no-progress --offline --strict-collection --config \
                  .github/zizmor.yml .github/workflows .github/dependabot.yml",
@@ -1114,25 +1092,12 @@ mod tests {
     ///
     /// pyflakes stays off, because no Windows package manager ships it and off
     /// is the only setting both matrix legs can agree on. shellcheck stays on,
-    /// and the step before actionlint holds it to one release, so the analysis
-    /// actionlint runs is the same on every host.
+    /// by the path mise resolved, so the analysis actionlint runs is the same
+    /// on every host.
     #[test]
-    fn actionlint_runs_shellcheck_and_the_step_before_it_pins_the_release() {
-        let names: Vec<&str> = STEPS.iter().map(|step| step.name).collect();
-        let at = |wanted: &str| {
-            names
-                .iter()
-                .position(|name| *name == wanted)
-                .unwrap_or_else(|| panic!("no {wanted} step"))
-        };
-        let shellcheck = at("shellcheck");
-        let actionlint = at("actionlint");
-        assert!(
-            shellcheck < actionlint,
-            "actionlint runs before the step that holds shellcheck to its release"
-        );
-
-        let command = STEPS[actionlint].primary.command;
+    fn actionlint_turns_pyflakes_off_and_takes_shellcheck_by_resolved_path() {
+        let actionlint = step("actionlint");
+        let command = actionlint.primary.command;
         assert!(
             command.contains(&"-pyflakes="),
             "pyflakes is left to whatever the host has: {command:?}"
@@ -1143,14 +1108,14 @@ mod tests {
              resolves to sh or bash goes unread: {command:?}"
         );
 
-        let probe = STEPS[shellcheck].primary.probe;
+        let probe = actionlint.primary.probe;
         assert!(
             matches!(probe, Probe::Version(_)),
-            "the shellcheck step probes with {probe:?}, which passes at any release"
+            "the actionlint step probes with {probe:?}, which passes at any release"
         );
 
         assert_eq!(
-            STEPS[actionlint].primary.resolved,
+            actionlint.primary.resolved,
             Some(Resolved {
                 flag: "-shellcheck=",
                 tool: "shellcheck",
@@ -1184,18 +1149,21 @@ mod tests {
         );
     }
 
-    /// An analyzer mise resolves nowhere stops the gate at the step that owns
-    /// it, before actionlint is reached. Running actionlint without the flag
-    /// would put the lookup back where it started, and a failed lookup there is
-    /// silent.
+    /// An analyzer mise resolves nowhere stops the gate at actionlint without
+    /// running it. Running actionlint without the flag would put the lookup
+    /// back where it started, and a failed lookup there is silent.
     #[test]
-    fn an_analyzer_that_resolves_nowhere_stops_the_gate_before_actionlint() {
+    fn an_analyzer_that_resolves_nowhere_stops_the_gate_at_actionlint() {
         let runner = FakeRunner::all_installed().unresolvable("shellcheck");
         let (rows, text) = gate(&runner);
 
         let last = rows.last().expect("one row");
-        assert_eq!(last.step, "shellcheck");
-        assert!(!last.passed());
+        assert_eq!(last.step, "actionlint");
+        assert!(
+            matches!(&last.outcome, Outcome::Mismatched(why) if why.contains("shellcheck")),
+            "got {:?}",
+            last.outcome
+        );
         assert!(
             !runner
                 .ran()
@@ -1204,7 +1172,7 @@ mod tests {
             "actionlint ran anyway: {:?}",
             runner.ran()
         );
-        assert!(text.contains("shellcheck did not run"), "got {text}");
+        assert!(text.contains("actionlint did not run"), "got {text}");
     }
 
     /// A step that fills a flag with a second tool's path refuses to run when
@@ -1255,16 +1223,16 @@ mod tests {
     /// calling the tool absent.
     #[test]
     fn a_pinned_tool_at_another_release_stops_the_gate() {
-        let shellcheck = step("shellcheck");
-        let runner = FakeRunner::all_installed().reporting(&shellcheck.primary, "1.2.3");
+        let actionlint = step("actionlint");
+        let runner = FakeRunner::all_installed().reporting(&actionlint.primary, "1.2.3");
         let (rows, text) = gate(&runner);
 
         let last = rows.last().expect("one row");
-        assert_eq!(last.step, "shellcheck");
+        assert_eq!(last.step, "actionlint");
         assert_eq!(
             last.outcome,
             Outcome::Mismatched(format!(
-                "shellcheck is 1.2.3 and {} pins {FAKE_RELEASE}",
+                "actionlint is 1.2.3 and {} pins {FAKE_RELEASE}",
                 pins::PINS
             ))
         );
@@ -1273,15 +1241,15 @@ mod tests {
                 .ran()
                 .iter()
                 .any(|line| line.starts_with(&format!("{FAKE_BIN}/actionlint"))),
-            "actionlint ran against an analyzer the pin does not cover: {:?}",
+            "actionlint ran at a release the pin does not cover: {:?}",
             runner.ran()
         );
         assert!(
-            text.contains("shellcheck did not run"),
+            text.contains("actionlint did not run"),
             "the summary does not say the step was skipped, got {text}"
         );
         assert!(
-            text.contains(shellcheck.primary.install),
+            text.contains(actionlint.primary.install),
             "the summary does not say how to install it, got {text}"
         );
     }

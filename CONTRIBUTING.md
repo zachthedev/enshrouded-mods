@@ -83,29 +83,23 @@ It runs, in order and stopping at the first failure:
 | `machete`    | Dependencies a crate declares and never uses             |
 | `audit`      | The lockfile against the RustSec advisory database       |
 | `prettier`   | Markup, JavaScript and TypeScript formatting             |
-| `shellcheck` | The git hooks, and the release actionlint's analyzer is  |
 | `actionlint` | Workflow syntax, runner labels and expressions           |
 | `zizmor`     | Workflow pinning, credentials, permissions and injection |
 
 `taplo` reads `.taplo.toml` for the files it covers, and leaves Ember's checkout
 under `vendor/` alone.
 
-`shellcheck` reads the hooks in `.githooks`, and its step is also where the gate
-holds the installed ShellCheck to the version `mise.toml` pins. That step runs
-before `actionlint` and the gate stops at the first step that does not pass, so
-`actionlint` is never reached on a host whose ShellCheck the pin does not cover.
-
 `actionlint` checks workflow syntax, runner labels and every expression,
 including whether a `needs.<job>.outputs.<name>` names an output that job
 declares. It runs an external analyzer when it finds one on `PATH` and says
 nothing at all when it does not, so an absent analyzer is a pass for a pass
 nobody ran. pyflakes is therefore off, because no Windows package manager ships
-it and off is the only setting both matrix legs agree on. shellcheck is on, and
-the step before it holds the release, so both legs run the same analysis. What
-that analysis reads is the shell in a `run:` block actionlint resolves to sh or
-bash. A block declaring `shell: pwsh`, and every block in the `gate` job, is not
-shell it can read, so the hooks the `shellcheck` step names are the bulk of what
-is covered here.
+it and off is the only setting both matrix legs agree on. shellcheck is on, by
+the path mise resolved for the pinned release, so both legs run the same
+analysis. The step also holds the installed actionlint to the version
+`mise.toml` pins. What the analysis reads is the shell in a `run:` block
+actionlint resolves to sh or bash; a block declaring `shell: pwsh`, and every
+block in the `gate` job, is not shell it can read.
 
 `zizmor` audits the same files for supply chain and credential problems: an
 action not pinned to a commit, a checkout that leaves the job token behind, a
@@ -134,28 +128,24 @@ pre-push hook runs it on whichever host a contributor uses.
 
 ## Hooks
 
-`.githooks` holds the hooks: `commit-msg` runs commitlint, and `pre-push` runs
-the gate. Install them once per clone:
+`lefthook.yml` holds the hooks: `commit-msg` runs commitlint, and `pre-push`
+runs the gate. [lefthook](https://lefthook.dev) installs them into `.git/hooks`
+when `bun install` runs the `prepare` script, once per clone:
 
 ```sh
 bun install
 ```
 
-Without Bun:
-
-```sh
-cargo xtask hooks install
-```
-
-Either one points `core.hooksPath` at `.githooks`.
+A clone that ran an earlier `prepare` still points `core.hooksPath` at a
+directory that no longer exists, so run `git config --unset core.hooksPath`
+once before installing.
 
 ## Commit messages
 
 [Conventional Commits](https://www.conventionalcommits.org), enforced by the
-`commit-msg` hook. `.github/commit-scopes.json` holds the scope list.
-`cargo xtask scopes` prints it, and `commitlint.config.js` enforces it:
-
-`private-chests`, `common`, `xtask`, `fixtures`, `deps`, `ci`, `release`.
+`commit-msg` hook. `.github/commit-scopes.json` holds the scope list, one
+sentence per scope saying what it covers. `cargo xtask scopes` prints it, and
+`commitlint.config.js` enforces it.
 
 A new mod earns a scope. Omit the scope rather than invent one.
 
