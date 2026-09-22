@@ -1,0 +1,15 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>zachthedev/.github//renovate/rust-app"],
+  "git-submodules": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "vendor/enshrouded-ember is this author's own repository. A git ref carries no release timestamp, so under timestamp-required the pointer never moves unless the cooldown is lifted for it.",
+      "matchManagers": ["git-submodules"],
+      "minimumReleaseAge": null,
+      "schedule": ["at any time"]
+    }
+  ]
+}
