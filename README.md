@@ -9,9 +9,8 @@ This repository is in development. No release is published yet.
 
 ## private-chests
 
-Every magic chest inside a base feeds every player's crafting from one shared
-pool. This mod gives each container and each crafting station an owner and a
-scope, so a craft draws only from containers the crafter can reach.
+The first mod. [docs/mods.md](docs/mods.md#private-chests) says what it
+changes.
 
 ### What a player sees
 
@@ -43,12 +42,17 @@ reach a player. With it off the mod still enforces scope; it just says nothing.
 
 ## Documentation
 
-| File                               | For                                        |
-| ---------------------------------- | ------------------------------------------ |
-| [docs/install.md](docs/install.md) | Server admins installing the mod           |
-| [docs/mods.md](docs/mods.md)       | What each mod does, and where its docs are |
-| [docs/dev.md](docs/dev.md)         | The first run, end to end                  |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | The gate, the commit convention, the hooks |
+| File                                                             | For                                                                  |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------- |
+| [docs/install.md](docs/install.md)                               | Installing a mod on a server, checking the download, upgrading       |
+| [docs/mods.md](docs/mods.md)                                     | What each mod does, and where its own documents are                  |
+| [Running private-chests](mods/private-chests/docs/admin.md)      | The mod's settings and the chat verbs                                |
+| [Draw and deposit paths](mods/private-chests/docs/draw-paths.md) | How the game itself moves items into and out of containers           |
+| [docs/dev.md](docs/dev.md)                                       | What to install, the first run, the dev server                       |
+| [fixtures/README.md](fixtures/README.md)                         | The worlds and configurations the dev server is seeded with          |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                               | The gate, the commit convention, where code goes, what never happens |
+| [SECURITY.md](SECURITY.md)                                       | How to report a vulnerability and what is in scope                   |
+| [AGENTS.md](AGENTS.md)                                           | What an agent reads first, runs to verify, and never does            |
 
 ## Layout
 
@@ -56,20 +60,9 @@ reach a player. With it off the mod still enforces scope; it just says nothing.
 | --------------------- | ------------------------------------------------------ |
 | `mods/private-chests` | The mod                                                |
 | `crates/mods-common`  | Helpers the mods here share                            |
-| `xtask`               | The gate, the hooks, the server and schema commands    |
+| `xtask`               | The gate, the release bundle, the forwards to Ember    |
 | `fixtures`            | Worlds and configuration for `cargo xtask server seed` |
 | `vendor`              | Ember, as a submodule, for local development           |
-
-## Requirements
-
-- Rust, at the release `rust-toolchain.toml` pins
-- A C toolchain, for MinHook, the hook engine Ember uses. On Windows, Visual
-  Studio Build Tools.
-- [Bun](https://bun.sh), for the repository's own tooling, at the release
-  `.bun-version` pins
-- On Windows, `core.symlinks=true` and Developer Mode, so `CLAUDE.md` checks
-  out as the symlink to `AGENTS.md` that git records
-- `git clone --recurse-submodules`, or `git submodule update --init`
 
 ## License
 

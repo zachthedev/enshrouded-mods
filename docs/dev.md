@@ -1,30 +1,20 @@
-# The first development run
+# Developing the mods
 
-End to end, from a fresh clone to a green gate.
+## Prerequisites
 
-## 1. Clone and install the toolchain
+- Rust, at the release `rust-toolchain.toml` pins. rustup installs it on the
+  first cargo command.
+- A C toolchain, for MinHook, the hook engine Ember uses. On Windows that is
+  Visual Studio Build Tools.
+- [Bun](https://bun.sh), for the repository's own tooling, at the release
+  `.bun-version` pins. Continuous integration reads the same file.
+- [mise](https://mise.jdx.dev), for every gate tool that rustup, cargo and bun
+  do not provide. `mise.toml` pins a version per tool and `mise.lock` records
+  a checksum per platform, so an install takes the recorded artifact or fails.
+- Ember, as the submodule at `vendor/enshrouded-ember`. `.gitmodules` pins the
+  repository and `Cargo.toml` points each Ember crate at it.
 
-Ember lives in its own repository and is vendored here at
-`vendor/enshrouded-ember`.
-
-```sh
-git clone --recurse-submodules https://github.com/zachthedev/enshrouded-mods.git
-cd enshrouded-mods
-```
-
-An existing clone catches up with `git submodule update --init`.
-
-The workspace builds the mod against the submodule: `Cargo.toml` points each
-Ember crate it uses at `vendor/`. Nothing else is needed for the paths to
-resolve.
-
-`rust-toolchain.toml` pins the Rust release, and rustup installs it on the first
-cargo command. A C toolchain is needed for MinHook, the hook engine Ember uses;
-on Windows that is Visual Studio Build Tools. The gate calls tools that rustup,
-cargo and bun do not provide. [mise](https://mise.jdx.dev) installs every one of
-them. `mise.toml` pins a version per tool and `mise.lock` records a checksum per
-platform, so an install takes the recorded artifact or fails. Install mise,
-then:
+Install mise, then:
 
 ```sh
 mise install
@@ -60,27 +50,70 @@ Bumping taplo writes a lockfile entry with no checksum at all, which the gate's
 own tests refuse, so whoever bumps it computes and commits the new hashes. A
 relock at the same version keeps them, so only a bump drops them.
 
-[Bun](https://bun.sh) runs the repository's own tooling, at the release
-`.bun-version` pins. Install the hooks and the markup formatter with one
-command:
+## First run
+
+From a fresh clone to a green gate:
 
 ```sh
-bun install
+git clone --recurse-submodules https://github.com/zachthedev/enshrouded-mods.git
+cd enshrouded-mods
+mise install                  # the gate's tools, at the releases mise.lock records
+bun install                   # the hooks and the markup formatter
+cargo xtask server fetch      # a dedicated server, into .cache
+cargo xtask schema extract    # the reflection schema, out of that server
+cargo xtask check             # the gate
 ```
 
-To build against a checkout of Ember somewhere else, put a `[patch.crates-io]`
-block in a `.cargo/config.toml` in a directory **above** this repository. Cargo
-merges config from every parent directory, and keeping it outside means this
-repository's own `.cargo/config.toml` stays untouched.
+An existing clone catches up with `git submodule update --init`. The workspace
+builds the mod against the submodule, so nothing else is needed for the paths
+to resolve.
 
-## 2. Fetch a dedicated server
+The fetch pulls a dedicated server from SteamCMD into `.cache`, which is
+gitignored. Anonymous login works for app 2278520, so no credentials are
+involved. The server runs to gigabytes. Fetch it once.
+
+The extraction reads the fetched server's executable and writes the schema
+dumps into `.cache/schema/<buildid>/`. Ember's
+[docs/dev.md](https://github.com/zachthedev/enshrouded-ember/blob/main/docs/dev.md)
+says what each one holds. The build id names the directory. It is not what the
+loader matches at run time: Ember identifies a build by the CodeView
+fingerprint in the image itself, because the build id is not readable from the
+running process.
+
+**The extraction is required.** Nothing recovered from a Keen binary is
+committed to this repository: no schema dump, no string table, no protocol
+registry, no game data. The extractors are committed and every contributor runs
+them against a server they fetched themselves. Anything the extractor produces
+is derived data, lives under `.cache`, and is regenerated rather than shared.
+The loop is fetch, extract, check.
+
+`cargo xtask check --rows` prints the gate's rows and what each covers.
+[CONTRIBUTING.md#the-gate](../CONTRIBUTING.md#the-gate) says what the gate does
+when a tool is missing. `pre-push` runs the same command, and so does
+continuous integration.
+
+## Running it
+
+The fetched dedicated server is what a mod runs against, never an installed
+copy of the game. `server` and `schema` forward to Ember's xtask through the
+submodule, with `--root` set to this repository, so every file they write lands
+under `.cache` here rather than in Ember's checkout:
 
 ```sh
-cargo xtask server fetch
+cargo xtask server seed --fixture <path>   # lay a fixture world into a run directory
+cargo xtask server run --inject <dll>      # start it, with the loader injected
+cargo xtask server logs --follow           # tail it
+cargo xtask server stop                    # ask it to shut down, and wait
 ```
 
-This pulls a dedicated server from SteamCMD into `.cache`, which is gitignored.
-Anonymous login works for app 2278520, so no credentials are involved.
+[fixtures/README.md](../fixtures/README.md) says what a fixture directory
+holds.
+
+Arguments pass through untouched, so Ember's own subcommands and flags are the
+only ones. Ember's
+[docs/dev.md](https://github.com/zachthedev/enshrouded-ember/blob/main/docs/dev.md)
+lists them, and `cargo xtask server -- --help` and
+`cargo xtask schema -- --help` print them for the Ember this repository vendors.
 
 A build lands in a directory named for its Steam build id, which is the key
 Steam, SteamCMD and the depot manifest all speak:
@@ -99,56 +132,24 @@ none of it is committed.
 is refused. Your installed copy of the game is not a server, Steam overwrites
 its own files, and nothing here ever writes to, launches, or injects into one.
 
-The server runs to gigabytes. Fetch it once.
+## Generated files
 
-## 3. Extract the schema
+| File         | Regenerated by                                              |
+| ------------ | ----------------------------------------------------------- |
+| `Cargo.lock` | any cargo build after a manifest edit; the gate runs locked |
+| `bun.lock`   | `bun install` after a `package.json` edit                   |
+| `mise.lock`  | `mise lock` after a `mise.toml` edit                        |
 
-```sh
-cargo xtask schema extract
-```
+`mise.lock` keeps the hand-computed taplo hashes across a relock at the same
+version, as Prerequisites says.
 
-This reads the fetched server's executable and writes the schema dumps into
-`.cache/schema/<buildid>/`. Ember's
-[docs/dev.md](https://github.com/zachthedev/enshrouded-ember/blob/main/docs/dev.md)
-says what each one holds.
+## Tests that need a real thing
 
-The build id names the directory. It is not what the loader matches at run time:
-Ember identifies a build by the CodeView fingerprint in the image itself,
-because the build id is not readable from the running process.
+None.
 
-**This step is required.** Nothing recovered from a Keen binary is committed to
-this repository: no schema dump, no string table, no protocol registry, no game
-data. The extractors are committed and every contributor runs them against a
-server they fetched themselves. Anything the extractor produces is derived data,
-lives under `.cache`, and is regenerated rather than shared.
+## Building against another Ember checkout
 
-The loop is fetch, extract, check.
-
-## 4. Run the gate
-
-```sh
-cargo xtask check
-```
-
-`cargo xtask check --rows` prints its rows and what each covers.
-[CONTRIBUTING.md](../CONTRIBUTING.md#the-gate) says what the gate does when a
-tool is missing.
-
-`pre-push` runs the same command, and so does continuous integration.
-
-## The server and schema commands
-
-`server` and `schema` forward to Ember's xtask through the submodule, with
-`--root` set to this repository, so every file they write lands under `.cache`
-here rather than in Ember's checkout.
-
-Arguments pass through untouched, so Ember's own subcommands and flags are the
-only ones. Ember's
-[docs/dev.md](https://github.com/zachthedev/enshrouded-ember/blob/main/docs/dev.md)
-lists them, and `cargo xtask server -- --help` and
-`cargo xtask schema -- --help` print them for the Ember this repository vendors.
-
-## Where code goes
-
-[CONTRIBUTING.md](../CONTRIBUTING.md#where-code-goes) says where a change
-belongs.
+To build against a checkout of Ember somewhere else, put a `[patch.crates-io]`
+block in a `.cargo/config.toml` in a directory **above** this repository. Cargo
+merges config from every parent directory, and keeping it outside means this
+repository's own `.cargo/config.toml` stays untouched.

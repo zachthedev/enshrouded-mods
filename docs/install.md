@@ -3,9 +3,10 @@
 For server admins. The mod is server side. Players install nothing and join with
 a stock client.
 
-## What you need
+## Requirements
 
-- An Enshrouded dedicated server you run yourself
+- An Enshrouded dedicated server you run yourself, on Windows or under Wine or
+  Proton
 - `private-chests-v<version>.zip`, from this repository's
   [releases](https://github.com/zachthedev/enshrouded-mods/releases)
 
@@ -13,14 +14,7 @@ The archive carries Ember, the loader, along with the mod, so a first install
 needs nothing else. Upgrading Ember on its own is a separate download, described
 below.
 
-Every release attaches a `SHA256SUMS` file beside the archive. Check what you
-downloaded against it before extracting:
-
-```powershell
-Get-FileHash private-chests-v<version>.zip -Algorithm SHA256
-```
-
-## Where the files go
+## Install
 
 Ember is a proxy library that sits beside the server executable. The mod is a
 separate library under `ember/mods/`.
@@ -39,15 +33,46 @@ ember/
 ```
 
 The archive holds the two libraries and nothing else. Each library writes its
-own `config.json` on first start, so extracting a newer archive over a server
-you already run leaves your settings where they are.
+own `config.json` on first start.
 
 `POWRPROF.dll` is the default proxy name, because no other public Enshrouded
 loader claims it. The same library renamed to `IPHLPAPI.dll` or `dbghelp.dll`
 forwards those instead, for a server that already has something in the first
 slot.
 
-One directory to drop in, and mods compose without further steps.
+One directory to drop in, and mods compose without further steps. The Windows
+and the Wine sections below say how to start the server once the files are in
+place.
+
+## Check the download
+
+Every release attaches a `SHA256SUMS` file beside the archive, written by the
+same command that built the archive. Check what you downloaded against it
+before extracting:
+
+```powershell
+Get-FileHash private-chests-v<version>.zip -Algorithm SHA256
+```
+
+The build that produced the archive is attested by GitHub, so the archive can
+also be held to the workflow run that made it:
+
+```sh
+gh attestation verify private-chests-v<version>.zip --repo zachthedev/enshrouded-mods
+```
+
+## Upgrade
+
+Extract a newer archive over the server you already run. No `config.json` is in
+the archive, so your settings stay where they are. Ember refuses to load a mod
+built against an ABI it does not match, and names that mod in the startup
+report; take that mod's newest release when you see it named.
+
+## Uninstall
+
+Delete `POWRPROF.dll` and the `ember/` directory. The mod keeps its settings
+under `ember/mods/private-chests/` and nothing outside it, so removal leaves
+the server as it was.
 
 ## Windows
 
@@ -84,10 +109,6 @@ beside the server executable and leave `ember/` alone.
 It is the same library a mod's archive carries. Ember builds the loader once and
 a mod's release downloads that asset rather than building its own, so the file
 you install either way is the same one.
-
-Ember refuses to load a mod built against an ABI it does not match, and names
-that mod in the startup report. Take that mod's newest release when you see it
-named.
 
 ## Turning on chat
 
