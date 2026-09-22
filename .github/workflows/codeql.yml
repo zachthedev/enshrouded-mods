@@ -1,0 +1,38 @@
+name: codeql
+
+# Code scanning from a committed workflow, never default setup: default setup
+# pins nothing and names checks the repository does not control. The reusable
+# workflow runs one analysis per language below. In a caller each check run is
+# named <caller job> / Analyze (<language>), so here `codeql / Analyze
+# (actions)`, which is the name a branch ruleset requires.
+#
+# The actions analysis runs beside zizmor, and neither replaces the other.
+# Rust is not analyzed yet: the reusable workflow checks out no submodule, and
+# ember-sdk is a path dependency into one, so the extractor cannot load the
+# workspace and a green run would carry no semantics. Rust joins the list once
+# ember-sdk comes from crates.io, under build-mode none, and that first run's
+# log is read for the autobuild fallback line before its conclusion is trusted.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # At least once a week, so a query published after the last change to this
+  # repository still reports against this tree. Thursday, clear of audit.yml's
+  # Monday cron.
+  schedule:
+    - cron: '37 9 * * 4'
+
+permissions: {}
+
+jobs:
+  # The calling job grants what the called job declares. A called job can only
+  # lower what its caller passes, and a caller passing less is refused before
+  # any step runs.
+  codeql:
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    uses: zachthedev/.github/.github/workflows/codeql.yml@c53d09e393028ceddee0d761f2a7963394289a72 # v0.1.0
+    with:
+      languages: '[{"language": "actions"}]'
