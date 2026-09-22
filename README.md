@@ -67,6 +67,8 @@ reach a player. With it off the mod still enforces scope; it just says nothing.
   Studio Build Tools.
 - [Bun](https://bun.sh), for the repository's own tooling, at the release
   `.bun-version` pins
+- On Windows, `core.symlinks=true` and Developer Mode, so `CLAUDE.md` checks
+  out as the symlink to `AGENTS.md` that git records
 - `git clone --recurse-submodules`, or `git submodule update --init`
 
 ## License
