@@ -56,7 +56,11 @@ enum Command {
     /// Print the commit scopes this repository accepts.
     Scopes,
     /// Run the gate: every check a change has to pass.
-    Check,
+    Check {
+        /// Print the rows and what each checks, and run nothing.
+        #[arg(long)]
+        rows: bool,
+    },
     /// Hold mise.toml and mise.lock to their rules, which the gate does first.
     Pins,
     /// Build a mod's release bundle: one archive and its digest file.
@@ -120,7 +124,11 @@ fn dispatch() -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Check => {
+        Command::Check { rows: true } => {
+            check::Gate::new(check::STEPS, &runner).rows(&mut out)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Check { rows: false } => {
             let rows = check::Gate::new(check::STEPS, &runner).run(&mut out)?;
             Ok(if rows.iter().all(check::Row::passed) {
                 ExitCode::SUCCESS

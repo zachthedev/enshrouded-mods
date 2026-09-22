@@ -70,36 +70,30 @@ One command, and the only one:
 cargo xtask check
 ```
 
-It runs, in order and stopping at the first failure:
+It runs its rows in order and stops at the first failure. The rows, and what
+each one covers, are printed by the same table the gate runs:
 
-| Step         | What it checks                                           |
-| ------------ | -------------------------------------------------------- |
-| `fmt`        | Rust formatting                                          |
-| `taplo`      | TOML formatting                                          |
-| `clippy`     | Lints on every target, with warnings denied              |
-| `tests`      | The workspace's tests, through `cargo nextest`           |
-| `doctests`   | Every documented example                                 |
-| `deny`       | Advisories, licenses, bans and sources                   |
-| `machete`    | Dependencies a crate declares and never uses             |
-| `audit`      | The lockfile against the RustSec advisory database       |
-| `prettier`   | Markup, JavaScript and TypeScript formatting             |
-| `actionlint` | Workflow syntax, runner labels and expressions           |
-| `zizmor`     | Workflow pinning, credentials, permissions and injection |
+```sh
+cargo xtask check --rows
+```
 
-`taplo` reads `.taplo.toml` for the files it covers, and leaves Ember's checkout
-under `vendor/` alone.
+`cargo xtask` runs `--locked`, and so does every cargo row, so a manifest edit
+with no relock is refused before the gate starts rather than rewriting
+`Cargo.lock`. `taplo` reads `.taplo.toml` for the files it covers, and leaves
+Ember's checkout under `vendor/` alone; `cargo machete` reads `.ignore` for
+the same exclusion.
 
 `actionlint` checks workflow syntax, runner labels and every expression,
 including whether a `needs.<job>.outputs.<name>` names an output that job
 declares. It runs an external analyzer when it finds one on `PATH` and says
 nothing at all when it does not, so an absent analyzer is a pass for a pass
-nobody ran. pyflakes is therefore off, because no Windows package manager ships
-it and off is the only setting both matrix legs agree on. shellcheck is on, by
-the path mise resolved for the pinned release, so both legs run the same
-analysis. The step also holds the installed actionlint to the version
-`mise.toml` pins. What the analysis reads is the shell in a `run:` block
-actionlint resolves to sh or bash; a block declaring `shell: pwsh`, and every
-block in the `gate` job, is not shell it can read.
+nobody ran, and no flag changes that. pyflakes is therefore off, because no
+Windows package manager ships it and off is the only setting both matrix legs
+agree on. shellcheck is on, by the path mise resolved for the pinned release,
+and the row first runs it over a canary workflow with one unquoted expansion
+and is refused unless that run reports `SC2086`. What the analysis reads is
+the shell in a `run:` block actionlint resolves to sh or bash; a block declaring
+`shell: pwsh`, and every block in the `gate` job, is not shell it can read.
 
 `zizmor` audits the same files for supply chain and credential problems: an
 action not pinned to a commit, a checkout that leaves the job token behind, a
@@ -107,18 +101,20 @@ workflow with no `permissions` block, and expression injection through untrusted
 context. It is given `.github/workflows` and `.github/dependabot.yml` by name,
 so it never reaches the workflows in Ember's checkout under `vendor/`.
 `--strict-collection` makes a file it cannot parse fail the step rather than
-drop out of the audit. `--offline` keeps it from needing a GitHub token, so a
-runner and a laptop get the same findings. `--config` names
+drop out of the audit. It runs online when `gh auth token` answers, so the
+audits that read the GitHub API run, and `--offline` otherwise; the row's note
+says which. `--config` names
 `.github/zizmor.yml`, which holds the Dependabot cooldown threshold, so the
 environment cannot swap it for another.
 
-`doctests` runs whether or not `cargo-nextest` is installed, because
-`cargo nextest` runs none of them and a doctest that stops compiling would
-otherwise pass the gate in silence.
+`doctests` runs beside `tests`, because `cargo nextest` runs none of them and a
+doctest that stops compiling would otherwise pass the gate in silence. `doc`
+builds every crate's documentation with warnings denied, so a broken link is a
+failure.
 
-`tests` falls back to `cargo test --workspace` when `cargo-nextest` is absent,
-and the summary says which runner ran. Any other missing tool stops the gate and
-names itself, because a check that did not run is not a check that passed.
+A missing tool stops the gate and names itself, because a check that did not
+run is not a check that passed. Advisories are not a row: Dependabot alerts read
+RustSec for every pushed lockfile.
 
 The pre-push hook and continuous integration call the same command, so neither
 can run a different gate.

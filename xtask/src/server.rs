@@ -71,7 +71,7 @@ impl<'a> Delegate<'a> {
 
         match self
             .runner
-            .run(&borrowed)
+            .run(&borrowed, &[])
             .with_context(|| format!("failed to start: {line}"))?
         {
             Exit::Ok => Ok(()),
@@ -115,7 +115,11 @@ mod tests {
             Some(String::new())
         }
 
-        fn run(&self, command: &[&str]) -> io::Result<Exit> {
+        fn capture_any(&self, _command: &[&str]) -> Option<String> {
+            None
+        }
+
+        fn run(&self, command: &[&str], _env: &[(&str, &str)]) -> io::Result<Exit> {
             self.ran.borrow_mut().push(command.join(" "));
             Ok(Exit::Ok)
         }

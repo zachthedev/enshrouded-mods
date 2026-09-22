@@ -107,6 +107,16 @@ impl Tag {
     }
 }
 
+/// Whether `release` is three runs of digits separated by dots.
+#[must_use]
+pub fn is_release(release: &str) -> bool {
+    let parts: Vec<&str> = release.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Whether `version` is three runs of digits, optionally followed by a
 /// pre-release the hyphen introduces.
 ///
@@ -114,8 +124,8 @@ impl Tag {
 /// declares and never ordered against another.
 fn is_version(version: &str) -> bool {
     match version.split_once('-') {
-        None => crate::check::is_release(version),
-        Some((release, pre)) => crate::check::is_release(release) && is_prerelease(pre),
+        None => is_release(version),
+        Some((release, pre)) => is_release(release) && is_prerelease(pre),
     }
 }
 
@@ -474,7 +484,7 @@ impl Source for Release<'_> {
         let line = command.join(" ");
         match self
             .runner
-            .run(&borrowed)
+            .run(&borrowed, &[])
             .with_context(|| format!("failed to start: {line}"))?
         {
             Exit::Ok => {}
@@ -633,7 +643,7 @@ fn build(
     .context("failed to write to the terminal")?;
 
     match runner
-        .run(&borrowed)
+        .run(&borrowed, &[])
         .with_context(|| format!("failed to start: {line}"))?
     {
         Exit::Ok => {}
@@ -913,7 +923,8 @@ mod tests {
     use super::{
         Bundle, EMBER, EMBER_SDK, LOADER, Local, MODS, MODS_DIRECTORY, Mod, Release, Request, SUMS,
         Source, TARGET, Tag, artifact, build_command, bundle, digest, ember_release, ember_tag,
-        ember_version, mods, read_mod, recorded_digest, refuse_escaping, run, sums_line, verified,
+        ember_version, is_release, mods, read_mod, recorded_digest, refuse_escaping, run,
+        sums_line, verified,
     };
     use crate::runner::{Exit, Runner};
 
@@ -1588,7 +1599,7 @@ version = \"0.4.2\"
         let version = ember_version(&lockfile).expect("the lockfile records the sdk");
         assert_eq!(version, scanned[0], "the reader and the lockfile disagree");
         assert!(
-            crate::check::is_release(&version),
+            is_release(&version),
             "the sdk resolves to {version}, which is not one release"
         );
         assert!(ember_tag(&version).starts_with('v'));
@@ -1824,7 +1835,11 @@ version = \"0.4.2\"
             None
         }
 
-        fn run(&self, command: &[&str]) -> io::Result<Exit> {
+        fn capture_any(&self, _command: &[&str]) -> Option<String> {
+            None
+        }
+
+        fn run(&self, command: &[&str], _env: &[(&str, &str)]) -> io::Result<Exit> {
             self.ran.borrow_mut().push(command.join(" "));
             if let Some(bytes) = &self.bytes {
                 put(&self.artifact, bytes);

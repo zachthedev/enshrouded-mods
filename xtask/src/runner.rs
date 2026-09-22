@@ -55,14 +55,22 @@ pub trait Runner {
     /// this as `Some`, so one call covers both questions.
     fn capture(&self, command: &[&str]) -> Option<String>;
 
-    /// Run `command`, letting it write straight to this process's terminal.
+    /// Run `command` silently and return what it printed whatever its exit
+    /// code, or `None` when the program cannot be started.
+    ///
+    /// This is for a command whose finding is its expected result, so a
+    /// non-zero exit carries the answer rather than the failure.
+    fn capture_any(&self, command: &[&str]) -> Option<String>;
+
+    /// Run `command` with `env` set on top of the scrubbed environment, letting
+    /// it write straight to this process's terminal.
     ///
     /// `command[0]` is the program.
     ///
     /// # Errors
     ///
     /// Returns the operating system error when the program cannot be started.
-    fn run(&self, command: &[&str]) -> io::Result<Exit>;
+    fn run(&self, command: &[&str], env: &[(&str, &str)]) -> io::Result<Exit>;
 
     /// Read the file at `relative`, resolved from the current directory, which
     /// is the repository root when the gate runs, or `None` when it cannot be
@@ -95,12 +103,23 @@ impl Runner for Processes {
         Some(printed)
     }
 
-    fn run(&self, command: &[&str]) -> io::Result<Exit> {
+    fn capture_any(&self, command: &[&str]) -> Option<String> {
+        let (program, args) = command.split_first()?;
+        let mut child = Command::new(program);
+        scrub(&mut child);
+        let output = child.args(args).stdin(Stdio::null()).output().ok()?;
+        let mut printed = String::from_utf8_lossy(&output.stdout).into_owned();
+        printed.push_str(&String::from_utf8_lossy(&output.stderr));
+        Some(printed)
+    }
+
+    fn run(&self, command: &[&str], env: &[(&str, &str)]) -> io::Result<Exit> {
         let Some((program, args)) = command.split_first() else {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty command"));
         };
         let mut child = Command::new(program);
         scrub(&mut child);
+        child.envs(env.iter().copied());
         let status = child.args(args).status()?;
         Ok(if status.success() {
             Exit::Ok

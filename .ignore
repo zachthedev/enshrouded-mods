@@ -1,0 +1,3 @@
+# cargo-machete honors this file. vendor/ is the Ember submodule, whose
+# manifests belong to that repository and its own gate.
+vendor/
