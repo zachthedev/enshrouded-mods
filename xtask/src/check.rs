@@ -519,23 +519,13 @@ impl<'a> Gate<'a> {
                 .read_file(path)
                 .ok_or_else(|| format!("{path} cannot be read"))
         };
-        // The environment can point mise at a file other than the one these
-        // rules read, which would leave them judging a document mise ignores.
-        // Reading the variables costs no process, so the row still runs before
-        // mise exists on a machine.
-        let mut found = pins::environment_problems(|name| std::env::var(name).ok());
-        found.extend(
-            match (read(pins::PINS), read(pins::LOCK), read(pins::WORKFLOW)) {
-                (Ok(pin_text), Ok(lock), Ok(workflow)) => {
-                    pins::problems(&pin_text, &lock, &workflow)
-                }
-                (first, second, third) => [first, second, third]
-                    .into_iter()
-                    .filter_map(Result::err)
-                    .collect(),
-            },
-        );
-        found
+        match (read(pins::PINS), read(pins::LOCK)) {
+            (Ok(pin_text), Ok(lock)) => pins::problems(&pin_text, &lock),
+            (first, second) => [first, second]
+                .into_iter()
+                .filter_map(Result::err)
+                .collect(),
+        }
     }
 
     /// The row for the pin rules, which run before any tool does.
@@ -841,7 +831,7 @@ mod tests {
                     tool.coordinate()
                 )
                 .expect("write to a String");
-                for platform in ["linux-x64", "windows-x64"] {
+                for platform in pins::PLATFORMS {
                     writeln!(
                         lock,
                         "[tools.\"{}\".\"platforms.{platform}\"]\nchecksum = \"sha256:{}\"\nurl = \
@@ -869,10 +859,6 @@ mod tests {
             );
             present.push((pins::PINS.to_string(), pinned));
             present.push((pins::LOCK.to_string(), lock));
-            present.push((
-                pins::WORKFLOW.to_string(),
-                "        os: [windows-latest, ubuntu-latest]\n".to_string(),
-            ));
             Self {
                 unresolvable: Vec::new(),
                 installed,
