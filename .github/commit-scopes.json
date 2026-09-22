@@ -1,1 +1,15 @@
-["private-chests", "common", "xtask", "fixtures", "deps", "ci", "release"]
+[
+  {
+    "scope": "private-chests",
+    "covers": "The private-chests mod: container ownership and the private, team and public crafting pools."
+  },
+  { "scope": "common", "covers": "mods-common, the helpers every mod in this repository shares." },
+  {
+    "scope": "xtask",
+    "covers": "Repository automation: the gate, the release bundle and the forwards to Ember's xtask."
+  },
+  { "scope": "fixtures", "covers": "The server configs and worlds the tests and the dev loop run against." },
+  { "scope": "deps", "covers": "A dependency bump with no code change of its own." },
+  { "scope": "ci", "covers": "The workflows and what they call." },
+  { "scope": "release", "covers": "Versioning, changelogs and the release pipeline." }
+]
