@@ -1,3 +1,6 @@
+# The gate runs the licenses, bans and sources checks alone; Dependabot alerts
+# carry RustSec advisories per push. A yanked crate is what neither sees, so
+# this table holds for whatever runs `cargo deny check advisories`.
 [advisories]
 yanked = "deny"
 
