@@ -116,8 +116,7 @@ so it never reaches the workflows in Ember's checkout under `vendor/`.
 drop out of the audit. `--offline` keeps it from needing a GitHub token, so a
 runner and a laptop get the same findings. `--config` names
 `.github/zizmor.yml`, which holds the Dependabot cooldown threshold, so the
-environment cannot swap it for another. A test allowlists every inline zizmor
-ignore comment.
+environment cannot swap it for another.
 
 `doctests` runs whether or not `cargo-nextest` is installed, because
 `cargo nextest` runs none of them and a doctest that stops compiling would

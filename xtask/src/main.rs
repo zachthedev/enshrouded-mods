@@ -9,8 +9,6 @@ pub mod check;
 mod hooks;
 pub mod package;
 pub mod pins;
-#[cfg(test)]
-mod policy;
 mod runner;
 mod server;
 

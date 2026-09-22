@@ -28,9 +28,6 @@ ember-sdk = { version = "0.1", path = "vendor/enshrouded-ember/crates/ember-sdk"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 owo-colors = { version = "4.4.0", features = ["supports-colors"] }
-# CommonMark and tables, for the tests that read the documentation. The HTML
-# renderer and its command-line front end stay out.
-pulldown-cmark = { version = "0.13.4", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # The digest the release bundle is published with, and the one `package` holds
@@ -41,13 +38,10 @@ sha2 = "0.11.0"
 # nothing else.
 tempfile = "3.27.0"
 thiserror = "2.0.20"
-# A TOML parser. The gate reads mise.toml for the version a tool is pinned to,
-# and the tests read the manifests and the lockfile beside it.
+# A TOML parser. The gate reads mise.toml for the version a tool is pinned to
+# and mise.lock for the artifact each platform installs.
 toml = "1.1.6"
 tracing = "0.1.44"
-# A YAML parser, for the tests that read the Dependabot, zizmor and workflow
-# configuration. They read UTF-8 text, so the encoding detection stays out.
-yaml-rust2 = { version = "0.13.0", default-features = false }
 # The archive writer for `package`. Deflate alone, through the pure-Rust zlib
 # backend: a server admin extracts the bundle with whatever ships on the host,
 # and every other method this crate can write needs a tool that understands it.

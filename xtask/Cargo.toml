@@ -19,9 +19,5 @@ tempfile.workspace = true
 toml.workspace = true
 zip.workspace = true
 
-[dev-dependencies]
-pulldown-cmark.workspace = true
-yaml-rust2.workspace = true
-
 [lints]
 workspace = true
