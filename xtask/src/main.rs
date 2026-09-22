@@ -1,12 +1,11 @@
 //! Repository automation, run as `cargo xtask <command>`.
 //!
-//! `check` is the gate, and `pins` is its first step run alone. `hooks install`
-//! points git at `.githooks`. `package` builds a mod's release bundle. `server`
+//! `check` is the gate, and `pins` is its first step run alone. `package`
+//! builds a mod's release bundle. `server`
 //! and `schema` forward to Ember's xtask through the submodule, because those
 //! drive Keen's binary rather than anything this repository owns.
 
 pub mod check;
-mod hooks;
 pub mod package;
 pub mod pins;
 mod runner;
@@ -28,12 +27,20 @@ use crate::runner::Processes;
 /// prints and the scopes the commit hook accepts are one list.
 const SCOPES_JSON: &str = include_str!("../../.github/commit-scopes.json");
 
+/// One commit scope and the one sentence saying what it covers.
+#[derive(serde::Deserialize)]
+struct Scope {
+    scope: String,
+    covers: String,
+}
+
 /// The commit scopes, in the order the scope file lists them.
 ///
 /// # Errors
 ///
-/// Returns an error when the scope file is not a JSON array of strings.
-fn scopes() -> anyhow::Result<Vec<String>> {
+/// Returns an error when the scope file is not a JSON array of
+/// `{ scope, covers }` objects.
+fn scopes() -> anyhow::Result<Vec<Scope>> {
     serde_json::from_str(SCOPES_JSON).context("reading .github/commit-scopes.json")
 }
 
@@ -52,11 +59,6 @@ enum Command {
     Check,
     /// Hold mise.toml and mise.lock to their rules, which the gate does first.
     Pins,
-    /// Manage this clone's git hooks.
-    Hooks {
-        #[command(subcommand)]
-        action: HookAction,
-    },
     /// Build a mod's release bundle: one archive and its digest file.
     Package {
         /// The mod to bundle, by its package name.
@@ -87,12 +89,6 @@ enum Command {
     },
 }
 
-#[derive(Subcommand)]
-enum HookAction {
-    /// Point `core.hooksPath` at `.githooks` for this clone.
-    Install,
-}
-
 /// The repository root, which is the directory above this crate's manifest.
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -119,8 +115,8 @@ fn dispatch() -> anyhow::Result<ExitCode> {
 
     match cli.command {
         Command::Scopes => {
-            for scope in scopes()? {
-                println!("{scope}");
+            for Scope { scope, covers } in scopes()? {
+                println!("{scope}  {covers}");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -139,12 +135,6 @@ fn dispatch() -> anyhow::Result<ExitCode> {
             } else {
                 ExitCode::SUCCESS
             })
-        }
-        Command::Hooks {
-            action: HookAction::Install,
-        } => {
-            hooks::Hooks::new(&runner).install(&mut out)?;
-            Ok(ExitCode::SUCCESS)
         }
         Command::Package {
             subject,
@@ -189,9 +179,10 @@ mod tests {
     /// would accept a commit nobody meant to allow.
     #[test]
     fn scopes_are_distinct_and_named() {
-        let scopes = scopes().expect("the scope file is a JSON array of strings");
-        assert!(!scopes.is_empty(), "the scope file names no scope");
+        let entries = scopes().expect("the scope file is a JSON array of scope objects");
+        assert!(!entries.is_empty(), "the scope file names no scope");
 
+        let scopes: Vec<&str> = entries.iter().map(|entry| entry.scope.as_str()).collect();
         let mut seen = scopes.clone();
         seen.sort_unstable();
         seen.dedup();
@@ -200,14 +191,17 @@ mod tests {
             scopes.len(),
             "a scope appears twice: {scopes:?}"
         );
-        assert!(
-            scopes.iter().all(|scope| !scope.is_empty()),
-            "a scope is empty: {scopes:?}"
-        );
+        for entry in &entries {
+            assert!(!entry.scope.is_empty(), "a scope is empty");
+            assert!(
+                !entry.covers.is_empty(),
+                "{} says nothing about what it covers",
+                entry.scope
+            );
+        }
     }
 
-    /// The root is the workspace root, which is where the gate and the hooks
-    /// both act.
+    /// The root is the workspace root, which is where the gate acts.
     #[test]
     fn the_repository_root_holds_the_workspace_manifest() {
         assert!(repo_root().join("Cargo.toml").is_file());

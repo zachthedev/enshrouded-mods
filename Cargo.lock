@@ -814,6 +814,7 @@ dependencies = [
  "anyhow",
  "clap",
  "owo-colors",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
