@@ -9,3 +9,8 @@ node_modules/
 
 # Ember, formatted by its own repository.
 vendor/
+
+# Written by release-plz, one per crate, on every release. Its scope markers
+# are `*` emphasis prettier rewrites, so formatting it would turn every release
+# pull request into a failing gate.
+CHANGELOG.md

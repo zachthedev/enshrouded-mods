@@ -175,7 +175,42 @@ dependency that pulls it in.
 
 ## Releases
 
-None.
+[release-plz](https://release-plz.dev) releases the workspace, configured in
+`release-plz.toml`, and `.github/workflows/cd.yml` runs it. Nothing here is
+published to a registry: a mod ships as one archive on its GitHub release.
+
+1. Every push to main opens or updates one release pull request under the
+   zachthedev-releaser app. It carries each changed mod's next version and its
+   changelog entry.
+2. Merging that pull request, as a squash, is the release. The next run waits
+   for the `release` environment's reviewer, then tags each mod the pull
+   request names `<mod>-v<version>` and drafts its GitHub release.
+3. `cargo xtask package` builds the mod's archive from that commit, with
+   Ember's loader downloaded from Ember's own release and held to its digest
+   file, and writes a `SHA256SUMS` beside it.
+4. The publish job attaches both files, records a build provenance
+   attestation, waits for the same reviewer a second time, and flips the draft
+   public. Two approvals per release is the cost of creating every release as
+   a draft.
+
+release-plz owns every version in the manifests and every crate's
+`CHANGELOG.md`, beside the crate's `Cargo.toml`. Nobody edits either by hand;
+to change what a release says, edit the release pull request before merging
+it. A red release pull request is never merged with `--admin`, because the
+bypass also skips the required checks.
+
+A commit that changes a mod's packaged files releases that mod. The commit
+type sets the changelog section and the bump size, and below 1.0.0 a `feat`
+bumps the patch and a breaking change the minor. The workspace starts at 0.1.0
+because nothing depends on it yet, and `0.x` promises no compatibility.
+
+No mod is released while `ember-sdk` is a path dependency into the submodule:
+release-plz cannot package a tagged version without the submodule, and
+`cargo xtask package` refuses a loader it cannot name by a released Ember
+version. The first release follows `ember-sdk` onto crates.io.
+
+A failed release is recovered by cutting the next version, never by moving a
+tag. Only the releaser app can create a tag.
 
 ## What never happens
 

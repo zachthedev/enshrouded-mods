@@ -1,0 +1,175 @@
+name: cd
+
+# Everything after a merge. A push to main keeps the release pull request
+# current. The squash merge of that pull request makes the next run tag each
+# crate it names and draft its release, once the release environment's
+# reviewer approves. bundle then builds the mod's archive from that same
+# commit, and publish attaches it, attested, and flips the draft public under a
+# second approval. release-plz.toml says what releases and how it is versioned.
+#
+# The merge is a squash, so the tag release-plz creates names the commit this
+# run is for, which the publish job requires. A merge commit would have
+# release-plz tag the pull request's last commit instead.
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# Every action is pinned to a commit. A tag can be retargeted by its owner with
+# no pull request and no cooldown; a commit cannot. Renovate bumps the hash and
+# keeps the version comment current.
+jobs:
+  # Opens or updates the release pull request under the releaser app. A pull
+  # request opened with the job token starts no workflow run, so no check would
+  # reach it; the app is a distinct actor, and its pull request runs CI.
+  release-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Two pushes landing together would race to write the same pull request.
+    # Queued, not canceled, so the later push still reaches the release notes.
+    concurrency:
+      group: release-pr
+      cancel-in-progress: false
+    # The checkout alone reads with the job token. Everything that writes goes
+    # through the app's token.
+    permissions:
+      contents: read
+    # Holds the releaser app's client id and key and admits main alone, through
+    # a deployment branch policy. No reviewer: an approval would hold every
+    # push. deployment: false, because this is a credential scope and not a
+    # target.
+    environment:
+      name: release-pr
+      deployment: false
+    steps:
+      # Narrowed with permission-* inputs. Without one the token carries the
+      # whole installation grant.
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASER_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASER_PRIVATE_KEY }}
+          # The release branch and its commit.
+          permission-contents: write
+          # The pull request itself.
+          permission-pull-requests: write
+      # The whole history, because release-plz reads every commit since each
+      # crate's last tag, and Ember's checkout under vendor/, because cargo
+      # resolves the workspace against it. release-plz pushes with the app's
+      # token on its own, so none stays in the checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      # The release is exact, because an unpinned one resolves at run time and
+      # a resolved release is under no cooldown. The action installs it with
+      # cargo-binstall, whose fallback when the prebuilt download fails compiles
+      # it with no lockfile; that path is the action's and stays open.
+      - uses: release-plz/action@d6c56271d640b6c1b61d1e00593641c400a9f4bd # v0.5.138
+        with:
+          command: release-pr
+          version: 0.3.168
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+
+  # Tags every crate the merged pull request names and drafts its release, once
+  # the release environment's reviewer approves. Nothing is published to a
+  # registry. No concurrency group: a queued run canceled by a later push would
+  # skip a release.
+  release:
+    # A job in a reviewer-gated environment queues an approval on every run, so
+    # this runs only on the release merge, whose squash subject is the pr_name
+    # release-plz.toml pins. A stray commit with that subject costs one
+    # approval, and release-plz then does nothing.
+    if: "startsWith(github.event.head_commit.message, 'chore: release')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    # The publish approval, which also holds the releaser app's client id and
+    # key, because this job creates the tags.
+    environment: release
+    outputs:
+      tag: ${{ steps.mod.outputs.tag }}
+    steps:
+      # The tags and the draft release are created under the app, the one actor
+      # the tag ruleset lets create a tag.
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASER_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASER_PRIVATE_KEY }}
+          # The tags and the draft release.
+          permission-contents: write
+          # Finding the release pull request the pushed commit came from.
+          permission-pull-requests: read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - id: release
+        uses: release-plz/action@d6c56271d640b6c1b61d1e00593641c400a9f4bd # v0.5.138
+        with:
+          command: release
+          version: 0.3.168
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+      # The mod is the one crate with a bundle. A run that did not release it
+      # hands on nothing.
+      - id: mod
+        env:
+          RELEASES: ${{ steps.release.outputs.releases }}
+        run: |
+          tag=$(jq --raw-output '.[]? | select(.package_name == "private-chests") | .tag' <<< "${RELEASES:-[]}")
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+  # Builds the bundle `cargo xtask package` writes: the mod's library for the
+  # shipped Windows target, Ember's loader downloaded from Ember's release and
+  # held to its digest file, and a SHA256SUMS of its own. The push commit is the
+  # tagged commit, so the default checkout is the right one and no ref is named.
+  # No cache: a release is built from nothing a pull request could have
+  # written.
+  bundle:
+    needs: release
+    if: needs.release.outputs.tag != ''
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      # GH_TOKEN, because the command downloads Ember's release assets through
+      # gh. The job token reads a public release.
+      - run: cargo xtask package --mod private-chests --tag "$TAG" --out dist
+        shell: bash
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+      # Flat: publish attaches every file at the root of the artifact.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundle
+          path: dist/*
+          if-no-files-found: error
+
+  # Attaches the bundle and its checksum to the draft, records a build
+  # provenance attestation, and flips the draft public under the release
+  # environment's reviewer. The calling job grants what the called job
+  # declares.
+  publish:
+    needs: [release, bundle]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: zachthedev/.github/.github/workflows/publish.yml@c53d09e393028ceddee0d761f2a7963394289a72 # v0.1.0
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+      artifacts: bundle
+      flip: true
