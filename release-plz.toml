@@ -1,9 +1,11 @@
 # release-plz holds every version and every changelog in this workspace, and
-# nobody edits either by hand. The release decision is content-based: a commit
-# that changes a crate's packaged files releases that crate, whatever its type.
-# The type sets the changelog section and the bump size alone, and a `feat`
-# below 1.0.0 bumps the patch. Each crate keeps its own CHANGELOG.md beside its
-# Cargo.toml, which is release-plz's default, so no root changelog exists.
+# nobody edits either by hand. A release needs a user-facing change: a feat,
+# fix, perf or revert subject, or a break of any type, in a crate's packaged
+# files. The workspace shares one version, so the released crates move
+# together, as the version_group below says. The type sets the changelog
+# section and the bump size, and a `feat` below 1.0.0 bumps the patch. Each
+# crate keeps its own CHANGELOG.md beside its Cargo.toml, which is
+# release-plz's default, so no root changelog exists.
 # Tags are `<crate>-v<version>`, pinned below: release-plz's default drops the
 # crate name in a workspace with no public package.
 
@@ -21,6 +23,15 @@ git_release_latest = false
 # Only the merge of a release pull request releases. Every other push to main
 # runs `release` and finds nothing to do.
 release_always = false
+# A crate releases only on a user-facing change: a feat, fix, perf or revert
+# subject, or a breaking change of any type. The squash merge lands one
+# subject per pull request, so this reads the subject that lands. A crate
+# whose local dependency released still follows it, because release-plz
+# bumps a dependent outside this check.
+release_commits = '^(feat|fix|perf|revert)(\([^)]*\))?!?:|^[a-z]+(\([^)]*\))?!:|(?m:^BREAKING[ -]CHANGE:)'
+# GitHub's generated notes follow the changelog on each release, listing
+# every merged pull request, dev-side ones included.
+git_release_generate_notes = true
 # The release pull request's title, which is also its one commit's subject and
 # so the squash merge's. cd.yml runs the release job only on a push whose
 # message starts `chore: release`, so every branch below keeps that prefix.
@@ -60,6 +71,40 @@ pr_body = """
 Managed by zachthedev-releaser.
 """
 
+[changelog]
+# A crate's changelog carries what its users see, under the section names
+# release-please uses in every other repository. The comment in each group
+# fixes the section order, and the body strips it.
+protect_breaking_commits = true
+body = """
+## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+
+{% for commit in commits %}
+{%- if commit.scope -%}
+- *({{commit.scope}})* {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}{%- if commit.links %} ({% for link in commit.links %}[{{link.text}}]({{link.href}}) {% endfor -%}){% endif %}
+{% else -%}
+- {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}
+{% endif -%}
+{% endfor -%}
+{% endfor %}"""
+commit_parsers = [
+    { message = "^feat", group = "<!-- 0 -->Features" },
+    { message = "^fix", group = "<!-- 1 -->Bug Fixes" },
+    # release-plz writes these when a crate moves only because a dependency did.
+    { message = "^chore: update(d the following local packages:| Cargo\\.(toml|lock) dependencies)", group = "<!-- 1 -->Bug Fixes" },
+    { message = "^perf", group = "<!-- 2 -->Performance" },
+    { message = "^revert", group = "<!-- 3 -->Reverts" },
+    # Every other type is skipped. protect_breaking_commits keeps a breaking one,
+    # and it lands under this group.
+    { message = ".*", group = "<!-- 4 -->Breaking Changes", skip = true },
+]
+
+# The released crates share the workspace's one version, so they are one
+# version_group: release_commits then holds back all of them or none, rather
+# than one whose version moves anyway.
+#
 # The helper crate every mod bundles. It releases so that a commit touching it
 # alone releases the mods too: the workspace shares one version, so release-plz
 # moves every releasable crate together, and a crate held back with
@@ -67,12 +112,14 @@ Managed by zachthedev-releaser.
 # version from, and no GitHub release, since nothing ships it on its own.
 [[package]]
 name = "mods-common"
+version_group = "mods"
 git_release_enable = false
 
 # Each release's notes carry the helper's commits, so a release that a
 # mods-common change caused says what changed.
 [[package]]
 name = "private-chests"
+version_group = "mods"
 changelog_include = ["mods-common"]
 
 [[package]]
