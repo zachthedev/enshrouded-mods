@@ -76,7 +76,7 @@ pub const STEPS: &[Step] = &[
         name: "taplo",
         covers: "TOML formatting, over the files .taplo.toml names",
         program: Program::Mise("taplo"),
-        args: &["fmt", "--check"],
+        args: &["fmt", "--check", "--config", ".taplo.toml"],
         install: MISE_INSTALL,
         env: &[],
     },
@@ -158,8 +158,10 @@ pub const STEPS: &[Step] = &[
         name: "zizmor",
         covers: "Workflow pinning, credentials, permissions and injection, over the named paths",
         program: Program::Mise("zizmor"),
-        // The paths are named, so the audit never reaches Ember's checkout
-        // under vendor/, whose workflows Ember's own gate covers.
+        // The paths are named rather than the repository root the handbook
+        // gives: zizmor honors .gitignore alone, and a root walk reaches Ember's
+        // checkout under vendor/ and audits its workflows under this config.
+        // Ember's own gate covers those.
         args: &[
             "--no-progress",
             "--strict-collection",
