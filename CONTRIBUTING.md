@@ -112,6 +112,16 @@ A new mod earns a scope. Omit the scope rather than invent one.
 The header and every body line stop at 72 columns; commitlint refuses longer.
 The subject is imperative and lowercase with no trailing period.
 
+A pull request's title takes the type of its most user-facing commit, and `!`
+when any commit breaks something users see. A squash lands the title alone,
+and release-plz cannot recover a break the title dropped.
+
+A revert is `revert(<scope>): <what is undone, in fresh words>`, with a
+`Refs: <sha>` footer naming each reverted commit. git's own
+`Revert "<header>"` subject carries no type, so neither the changelog nor the
+release decision sees it, and repeating the reverted header overflows 72
+columns.
+
 A body says what was wrong, what the change does now, and what a reader needs
 that the diff cannot show, such as what was deliberately not done. Past tense
 belongs here and nowhere else: a code comment describes the code as it is, and
@@ -221,13 +231,20 @@ to change what a release says, edit the release pull request before merging
 it. A red release pull request is never merged with `--admin`, because the
 bypass also skips the required checks.
 
-A commit that changes the packaged files of a mod or of `crates/mods-common`
-releases every mod: the workspace shares one version, so release-plz moves
-every releasable crate together. mods-common takes a tag and no GitHub release,
-and a mod's release notes carry mods-common's commits. The commit type sets the
-changelog section and the bump size, and below 1.0.0 a `feat` bumps the patch
-and a breaking change the minor. The workspace starts at 0.1.0 because nothing
+A user-facing change to a mod or to `crates/mods-common` releases every mod: a
+`feat`, `fix`, `perf` or `revert` subject, or a breaking change of any type.
+Every other type is hidden from the changelog and releases nothing. The
+workspace shares one version, so the released crates are one `version_group`
+and move together. mods-common takes a tag and no GitHub release, and a mod's
+release notes carry mods-common's commits. The commit type sets the changelog
+section and the bump size, and below 1.0.0 a `feat` bumps the patch and a
+breaking change the minor. The workspace starts at 0.1.0 because nothing
 depends on it yet, and `0.x` promises no compatibility.
+
+Every version heading in a changelog links GitHub's compare view from the
+previous tag, which lists every change in the release, hidden types included.
+`git log --oneline <mod>-v<old>..<mod>-v<new>` lists the same, and each GitHub
+release carries GitHub's generated notes after its changelog.
 
 No mod is released until Ember's release carries the loader, because
 `cargo xtask package` downloads it from there. The command also refuses a
