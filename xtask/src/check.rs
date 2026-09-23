@@ -251,7 +251,7 @@ impl<'a> Gate<'a> {
             .max(PINS_STEP.len());
         writeln!(
             out,
-            "  {PINS_STEP:width$}  mise.toml and mise.lock against the rules in pins.rs, before any tool runs"
+            "  {PINS_STEP:width$}  both mise pin files and their lockfiles against pins.rs, before any tool runs"
         )?;
         for step in self.steps {
             writeln!(out, "  {:width$}  {}", step.name, step.covers)?;
@@ -282,9 +282,19 @@ impl<'a> Gate<'a> {
                 .read_file(path)
                 .ok_or_else(|| format!("{path} cannot be read"))
         };
-        match (read(pins::PINS), read(pins::LOCK)) {
-            (Ok(pin_text), Ok(lock)) => pins::problems(&pin_text, &lock),
-            (first, second) => [first, second]
+        let (main, semver) = (pins::MAIN, pins::SEMVER);
+        match (
+            read(main.pins),
+            read(main.lock),
+            read(semver.pins),
+            read(semver.lock),
+        ) {
+            (Ok(pin_text), Ok(lock), Ok(semver_pins), Ok(semver_lock)) => {
+                let mut found = pins::problems(&pin_text, &lock);
+                found.extend(pins::semver_problems(&pin_text, &semver_pins, &semver_lock));
+                found
+            }
+            (first, second, third, fourth) => [first, second, third, fourth]
                 .into_iter()
                 .filter_map(Result::err)
                 .collect(),
@@ -313,12 +323,17 @@ impl<'a> Gate<'a> {
             for problem in &problems {
                 writeln!(out, "  {problem}")?;
             }
-            // The relock is the remedy only when a problem is about the lockfile;
-            // an unreadable or malformed mise.toml needs an edit, not a relock.
-            let remedy = if problems.iter().any(|problem| problem.contains(pins::LOCK)) {
-                format!("rewrite the lockfile with: {}", pins::RELOCK)
-            } else {
+            // The relock is the remedy only when a problem is about a lockfile;
+            // an unreadable or malformed pin file needs an edit, not a relock.
+            let relocks: Vec<&str> = pins::PAIRS
+                .iter()
+                .filter(|pair| problems.iter().any(|problem| problem.contains(pair.lock)))
+                .map(|pair| pair.relock)
+                .collect();
+            let remedy = if relocks.is_empty() {
                 format!("fix {}", pins::PINS)
+            } else {
+                format!("rewrite the lockfile with: {}", relocks.join(", then "))
             };
             rows.push(Row {
                 step: PINS_STEP,
@@ -555,13 +570,14 @@ mod tests {
         }
     }
 
-    /// The pin files the fake reads, built from `pins::TOOLS` so the pin rules
-    /// pass and the cases exercise the rows rather than the pin round.
-    fn sound_pins() -> (String, String) {
+    /// The pin file and lockfile for `pair` the fake reads, built from
+    /// `pins::TOOLS` so the pin rules pass and the cases exercise the rows
+    /// rather than the pin round.
+    fn sound_pair(pair: pins::Pair) -> (String, String) {
         let digest = "a".repeat(64);
         let mut pinned = String::from("[tools]\n");
         let mut lock = String::new();
-        for tool in pins::TOOLS {
+        for tool in pins::TOOLS.iter().filter(|tool| tool.pair == pair) {
             writeln!(pinned, "\"{}\" = \"1.2.3\"", tool.key).expect("write to a String");
             writeln!(
                 lock,
@@ -587,7 +603,10 @@ mod tests {
                 }
             }
         }
-        pinned.push_str("\n[settings]\nlockfile_platforms = [\"linux-x64\", \"windows-x64\"]\n");
+        if pair == pins::MAIN {
+            pinned
+                .push_str("\n[settings]\nlockfile_platforms = [\"linux-x64\", \"windows-x64\"]\n");
+        }
         (pinned, lock)
     }
 
@@ -619,12 +638,16 @@ mod tests {
             if !self.pins_readable {
                 return None;
             }
-            let (pinned, lock) = sound_pins();
-            match relative {
-                pins::PINS => Some(pinned),
-                pins::LOCK => Some(lock),
-                _ => None,
-            }
+            pins::PAIRS.iter().find_map(|pair| {
+                let (pinned, lock) = sound_pair(*pair);
+                if relative == pair.pins {
+                    Some(pinned)
+                } else if relative == pair.lock {
+                    Some(lock)
+                } else {
+                    None
+                }
+            })
         }
 
         fn resolve(&self, tool: &str) -> Option<PathBuf> {

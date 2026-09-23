@@ -61,7 +61,8 @@ enum Command {
         #[arg(long)]
         rows: bool,
     },
-    /// Hold mise.toml and mise.lock to their rules, which the gate does first.
+    /// Hold both mise pin files and their lockfiles to their rules, which the gate
+    /// does first.
     Pins,
     /// Build a mod's release bundle: one archive and its digest file.
     Package {
