@@ -55,18 +55,40 @@ Get-FileHash private-chests-v<version>.zip -Algorithm SHA256
 ```
 
 The build that produced the archive is attested by GitHub, so the archive can
-also be held to the workflow run that made it. The shared publish workflow
-signs the attestation, so the command names it beside the repository:
+also be held to the workflow run that made it and the commit it was built from.
+The shared publish workflow signs the attestation, so the command names it
+beside the repository. It resolves the commit the release tag names first,
+through `tags/` so that a branch with the same name cannot answer, and verifies
+nothing when no commit comes back. On Windows:
 
-```sh
-gh attestation verify private-chests-v<version>.zip \
-  --repo zachthedev/enshrouded-mods \
-  --signer-workflow zachthedev/.github/.github/workflows/publish.yml
+```powershell
+$sha = gh api repos/zachthedev/enshrouded-mods/commits/tags/private-chests-v<version> --jq .sha
+if ($LASTEXITCODE -eq 0 -and $sha) {
+    gh attestation verify private-chests-v<version>.zip `
+        --repo zachthedev/enshrouded-mods `
+        --signer-workflow zachthedev/.github/.github/workflows/publish.yml `
+        --source-digest $sha
+} else {
+    Write-Output "gh resolved no commit for that tag. Check the version and gh auth status."
+}
 ```
 
-A pass proves the archive was built in this repository and signed by that
-workflow. It does not name the tag; the release page and its `SHA256SUMS` tie
-the archive to its version.
+On Linux:
+
+```sh
+if sha=$(gh api repos/zachthedev/enshrouded-mods/commits/tags/private-chests-v<version> --jq .sha) && [ -n "$sha" ]; then
+  gh attestation verify private-chests-v<version>.zip \
+    --repo zachthedev/enshrouded-mods \
+    --signer-workflow zachthedev/.github/.github/workflows/publish.yml \
+    --source-digest "$sha"
+else
+  echo "gh resolved no commit for that tag. Check the version and gh auth status."
+fi
+```
+
+A pass proves the archive was built in this repository, signed by that
+workflow, from the commit the tag names. A tag moved since the release fails
+the check, because the attestation still names the commit it was built from.
 
 ## Upgrade
 
