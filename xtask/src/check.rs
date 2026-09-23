@@ -384,7 +384,7 @@ impl<'a> Gate<'a> {
             Program::Mise(tool) => self
                 .runner
                 .resolve(tool)
-                .ok_or_else(|| format!("mise resolves no {tool}: {}", step.install))?
+                .map_err(|reason| format!("{reason}: {}", step.install))?
                 .display()
                 .to_string(),
             Program::Path(name) => name.to_string(),
@@ -404,9 +404,9 @@ impl<'a> Gate<'a> {
                 // mise resolved goes on the command line, and a workflow with one
                 // known finding has to come back with that finding before the
                 // real run is trusted.
-                let analyzer = self.runner.resolve("shellcheck").ok_or_else(|| {
+                let analyzer = self.runner.resolve("shellcheck").map_err(|reason| {
                     format!(
-                        "mise resolves no shellcheck, and actionlint would skip the analysis in silence: {MISE_INSTALL}"
+                        "{reason}, and actionlint would skip the analysis in silence: {MISE_INSTALL}"
                     )
                 })?;
                 command.push(format!("-shellcheck={}", analyzer.display()));
@@ -704,8 +704,12 @@ mod tests {
             })
         }
 
-        fn resolve(&self, tool: &str) -> Option<PathBuf> {
-            (!self.unresolvable.contains(&tool)).then(|| PathBuf::from(format!("/fake/bin/{tool}")))
+        fn resolve(&self, tool: &str) -> Result<PathBuf, String> {
+            if self.unresolvable.contains(&tool) {
+                Err(format!("mise resolves no {tool}"))
+            } else {
+                Ok(PathBuf::from(format!("/fake/bin/{tool}")))
+            }
         }
 
         fn env_var(&self, name: &str) -> Option<String> {

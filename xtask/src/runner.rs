@@ -77,13 +77,18 @@ pub trait Runner {
     /// read.
     fn read_file(&self, relative: &str) -> Option<String>;
 
-    /// The path mise installs for `tool`, or `None` when mise resolves none.
+    /// The path mise installs for `tool`, or the sentence saying why mise
+    /// resolves none.
     ///
     /// Every pinned tool runs by this path rather than by name. The binary the
     /// gate probed, the binary a step runs and the binary handed to a tool that
     /// would otherwise look one up are then the same file by construction,
     /// rather than three lookups agreeing.
-    fn resolve(&self, tool: &str) -> Option<PathBuf>;
+    ///
+    /// # Errors
+    ///
+    /// Returns the sentence saying why mise resolves no `tool`.
+    fn resolve(&self, tool: &str) -> Result<PathBuf, String>;
 
     /// The value this process holds for the environment variable `name`, or
     /// `None` when it is unset or not unicode.
@@ -113,8 +118,7 @@ pub struct Processes;
 impl Runner for Processes {
     fn capture(&self, command: &[&str]) -> Option<String> {
         let (program, args) = command.split_first()?;
-        let mut child = Command::new(program);
-        scrub(&mut child);
+        let mut child = command_for(program).ok()?;
         let output = child.args(args).stdin(Stdio::null()).output().ok()?;
         if !output.status.success() {
             return None;
@@ -126,8 +130,7 @@ impl Runner for Processes {
 
     fn capture_any(&self, command: &[&str]) -> Option<String> {
         let (program, args) = command.split_first()?;
-        let mut child = Command::new(program);
-        scrub(&mut child);
+        let mut child = command_for(program).ok()?;
         let output = child.args(args).stdin(Stdio::null()).output().ok()?;
         let mut printed = String::from_utf8_lossy(&output.stdout).into_owned();
         printed.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -138,8 +141,7 @@ impl Runner for Processes {
         let Some((program, args)) = command.split_first() else {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty command"));
         };
-        let mut child = Command::new(program);
-        scrub(&mut child);
+        let mut child = command_for(program)?;
         child.envs(env.iter().copied());
         let status = child.args(args).status()?;
         Ok(if status.success() {
@@ -153,35 +155,27 @@ impl Runner for Processes {
         fs::read_to_string(relative).ok()
     }
 
-    fn resolve(&self, tool: &str) -> Option<PathBuf> {
-        // Standard output alone, rather than the merged streams `capture`
-        // returns. `mise which` writes the path to standard output and any
-        // warning to standard error, and reading only the stream that carries
-        // the answer keeps the path independent of how the two interleave.
-        let mut child = Command::new("mise");
-        scrub(&mut child);
-        // mise.toml alone: no .tool-versions, no environment file and no
-        // per-platform file, so a committed mise.local.toml, mise.<env>.toml
-        // or .tool-versions cannot choose the binary. On Windows a name set
-        // here replaces any spelling of it this process inherited, because the
-        // child environment matches names without case.
-        let output = child
-            .env("MISE_OVERRIDE_CONFIG_FILENAMES", crate::pins::PINS)
-            .env("MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES", "none")
-            .env("MISE_ENV", "")
-            .env("MISE_AUTO_ENV", "false")
-            .args(["which", tool])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
-        let line = printed.lines().next()?.trim();
-        (!line.is_empty()).then(|| PathBuf::from(line))
+    fn resolve(&self, tool: &str) -> Result<PathBuf, String> {
+        let root = std::env::current_dir()
+            .map_err(|err| format!("reading the working directory: {err}"))?;
+        crate::spawn::mise_which(&root, tool)
     }
+}
+
+/// A command running `program`, with this crate's build metadata removed from
+/// its environment and `PATH` narrowed as `spawn` narrows it. An absolute path
+/// runs as given, and a bare name runs from the absolute path `PATH` holds for
+/// it.
+fn command_for(program: &str) -> io::Result<Command> {
+    let path = if Path::new(program).is_absolute() {
+        PathBuf::from(program)
+    } else {
+        crate::spawn::resolve(program)
+            .map_err(|problem| io::Error::new(io::ErrorKind::NotFound, problem))?
+    };
+    let mut command = crate::spawn::command(&path).map_err(io::Error::other)?;
+    scrub(&mut command);
+    Ok(command)
 }
 
 /// Drop this crate's own build metadata from a child's environment.

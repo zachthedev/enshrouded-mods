@@ -2116,8 +2116,8 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
             None
         }
 
-        fn resolve(&self, _tool: &str) -> Option<PathBuf> {
-            None
+        fn resolve(&self, tool: &str) -> Result<PathBuf, String> {
+            Err(format!("mise resolves no {tool}"))
         }
     }
 

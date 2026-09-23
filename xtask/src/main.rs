@@ -10,6 +10,7 @@ pub mod package;
 pub mod pins;
 mod runner;
 mod server;
+mod spawn;
 
 use std::io;
 use std::path::PathBuf;

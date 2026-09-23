@@ -40,6 +40,12 @@ thiserror = "2.0.20"
 # and mise.lock for the artifact each platform installs.
 toml = "1.1.6"
 tracing = "0.1.44"
+# Resolves a bare program name from the absolute PATH entries alone, so the
+# gate spawns an absolute path.
+which = "8.0.6"
+# One Win32 call: the known folders a mise child is given in place of the
+# inherited ones.
+windows-sys = "0.61.2"
 # The archive writer for `package`. Deflate alone, through the pure-Rust zlib
 # backend: a server admin extracts the bundle with whatever ships on the host,
 # and every other method this crate can write needs a tool that understands it.

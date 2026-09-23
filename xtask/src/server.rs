@@ -128,8 +128,8 @@ mod tests {
             None
         }
 
-        fn resolve(&self, _program: &str) -> Option<PathBuf> {
-            None
+        fn resolve(&self, program: &str) -> Result<PathBuf, String> {
+            Err(format!("mise resolves no {program}"))
         }
     }
 
