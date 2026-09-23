@@ -156,19 +156,20 @@ pub const STEPS: &[Step] = &[
     },
     Step {
         name: "zizmor",
-        covers: "Workflow pinning, credentials, permissions and injection, over the named paths",
+        covers: "Workflow pinning, credentials, permissions and injection",
         program: Program::Mise("zizmor"),
-        // The paths are named rather than the repository root the handbook
-        // gives: zizmor honors .gitignore alone, and a root walk reaches Ember's
-        // checkout under vendor/ and audits its workflows under this config.
-        // Ember's own gate covers those.
+        // .github whole, with ignore handling off. A directory input honors
+        // .gitignore files, .git/info/exclude and the global excludes, so a
+        // committed ignore line could hide a workflow, and --collect=all turns
+        // all of them off. The input stays .github, which collects
+        // dependabot.yml and never reaches vendor/, node_modules or a worktree.
         args: &[
             "--no-progress",
             "--strict-collection",
+            "--collect=all",
             "--config",
             ".github/zizmor.yml",
-            ".github/workflows",
-            ".github/dependabot.yml",
+            ".github",
         ],
         install: MISE_INSTALL,
         env: &[],
@@ -292,12 +293,23 @@ impl<'a> Gate<'a> {
             (Ok(pin_text), Ok(lock), Ok(semver_pins), Ok(semver_lock)) => {
                 let mut found = pins::problems(&pin_text, &lock);
                 found.extend(pins::semver_problems(&pin_text, &semver_pins, &semver_lock));
+                found.extend(self.stray_problems());
                 found
             }
             (first, second, third, fourth) => [first, second, third, fourth]
                 .into_iter()
                 .filter_map(Result::err)
+                .chain(self.stray_problems())
                 .collect(),
+        }
+    }
+
+    /// Every other mise configuration or lockfile in the tree, or the reason
+    /// the tree could not be listed.
+    fn stray_problems(&self) -> Vec<String> {
+        match self.runner.config_paths() {
+            Ok(paths) => pins::stray_config_problems(&paths),
+            Err(problem) => vec![problem],
         }
     }
 
@@ -323,14 +335,19 @@ impl<'a> Gate<'a> {
             for problem in &problems {
                 writeln!(out, "  {problem}")?;
             }
-            // The relock is the remedy only when a problem is about a lockfile;
-            // an unreadable or malformed pin file needs an edit, not a relock.
+            // A stray file or link is removed, never relocked: `mise lock` would
+            // read the configuration the finding refuses. The relock is the
+            // remedy only when a problem is about a lockfile; an unreadable or
+            // malformed pin file needs an edit, not a relock.
+            let strays = self.stray_problems();
             let relocks: Vec<&str> = pins::PAIRS
                 .iter()
                 .filter(|pair| problems.iter().any(|problem| problem.contains(pair.lock)))
                 .map(|pair| pair.relock)
                 .collect();
-            let remedy = if relocks.is_empty() {
+            let remedy = if !strays.is_empty() {
+                "remove each file and link named above".to_string()
+            } else if relocks.is_empty() {
                 format!("fix {}", pins::PINS)
             } else {
                 format!("rewrite the lockfile with: {}", relocks.join(", then "))
@@ -402,10 +419,16 @@ impl<'a> Gate<'a> {
                 }
             }
             "zizmor" => {
-                // Online when the host has a GitHub login, so the audits that
-                // read the API run; offline otherwise, so a laptop with no token
-                // still gets the rest.
-                if let Some(token) = self.gh_token() {
+                // Offline in CI, where the gate holds no token: the online
+                // audits run in the shared workflows job, the one job that
+                // names the token. Locally, online when the host has a GitHub
+                // login, so those audits run before a push; offline otherwise.
+                let in_ci = self
+                    .runner
+                    .env_var("CI")
+                    .is_some_and(|value| !value.is_empty());
+                let token = if in_ci { None } else { self.gh_token() };
+                if let Some(token) = token {
                     env.push(("GH_TOKEN".to_string(), token));
                     note.push_str("online");
                 } else {
@@ -528,6 +551,12 @@ mod tests {
         failing: Vec<&'static str>,
         /// Whether `gh auth token` answers.
         logged_in: bool,
+        /// Whether `CI` reads as set.
+        in_ci: bool,
+        /// The paths the tree listing answers with beside the two pairs.
+        extra_paths: Vec<&'static str>,
+        /// The environment names each `run` call set, in order.
+        envs: RefCell<Vec<Vec<String>>>,
         /// Whether the pin files can be read.
         pins_readable: bool,
         /// Every command passed to `run`, in order.
@@ -540,9 +569,22 @@ mod tests {
                 unresolvable: Vec::new(),
                 failing: Vec::new(),
                 logged_in: true,
+                in_ci: false,
+                extra_paths: Vec::new(),
+                envs: RefCell::new(Vec::new()),
                 pins_readable: true,
                 ran: RefCell::new(Vec::new()),
             }
+        }
+
+        fn in_ci(mut self) -> Self {
+            self.in_ci = true;
+            self
+        }
+
+        fn with_path(mut self, path: &'static str) -> Self {
+            self.extra_paths.push(path);
+            self
         }
 
         fn unresolvable(mut self, tool: &'static str) -> Self {
@@ -586,16 +628,14 @@ mod tests {
                 tool.coordinate()
             )
             .expect("write to a String");
-            for platform in ["linux-x64", "windows-x64"] {
+            for asset in tool.assets {
+                let platform = asset.platform;
                 writeln!(
                     lock,
-                    "[tools.\"{}\".\"platforms.{platform}\"]\nchecksum = \"sha256:{digest}\"\nurl = \"https://github.com{}{}/{}\"\nurl_api = \"https://api.github.com/repos/{}/{}/releases/assets/1\"",
+                    "[tools.\"{}\".\"platforms.{platform}\"]\nchecksum = \"sha256:{digest}\"\nurl = \"{}\"\nurl_api = \"{}1\"",
                     tool.key,
-                    tool.release_prefix(),
-                    tool.tag("1.2.3"),
-                    tool.binary,
-                    tool.owner,
-                    tool.repository
+                    tool.url(platform, "1.2.3").expect("an asset names its own platform"),
+                    tool.api_prefix()
                 )
                 .expect("write to a String");
                 if let Some(provenance) = tool.provenance {
@@ -604,8 +644,19 @@ mod tests {
             }
         }
         if pair == pins::MAIN {
-            pinned
-                .push_str("\n[settings]\nlockfile_platforms = [\"linux-x64\", \"windows-x64\"]\n");
+            let platforms: Vec<String> = pins::TOOLS[0]
+                .assets
+                .iter()
+                .map(|asset| format!("\"{}\"", asset.platform))
+                .collect();
+            write!(
+                pinned,
+                "\n[tool_config]\nlocked = true\n\n[settings]\nlocked = true\nlockfile = true\nlocked_verify_provenance = true\nprovenance_api_failures_fatal = true\nlockfile_platforms = [{}]\nurl_replacements = {{ '{}' = \"{}\" }}\n",
+                platforms.join(", "),
+                pins::URL_API_PATTERN,
+                pins::URL_API_REFUSED
+            )
+            .expect("write to a String");
         }
         (pinned, lock)
     }
@@ -622,10 +673,13 @@ mod tests {
             })
         }
 
-        fn run(&self, command: &[&str], _env: &[(&str, &str)]) -> io::Result<Exit> {
+        fn run(&self, command: &[&str], env: &[(&str, &str)]) -> io::Result<Exit> {
             self.ran
                 .borrow_mut()
                 .push(command.iter().map(|arg| (*arg).to_string()).collect());
+            self.envs
+                .borrow_mut()
+                .push(env.iter().map(|(name, _)| (*name).to_string()).collect());
             let program = command[0].rsplit(['/', '\\']).next().unwrap_or(command[0]);
             Ok(if self.failing.contains(&program) {
                 Exit::Err
@@ -652,6 +706,21 @@ mod tests {
 
         fn resolve(&self, tool: &str) -> Option<PathBuf> {
             (!self.unresolvable.contains(&tool)).then(|| PathBuf::from(format!("/fake/bin/{tool}")))
+        }
+
+        fn env_var(&self, name: &str) -> Option<String> {
+            (name == "CI" && self.in_ci).then(|| "true".to_string())
+        }
+
+        fn config_paths(&self) -> Result<Vec<pins::TreeEntry>, String> {
+            let pairs = pins::PAIRS.iter().flat_map(|pair| [pair.pins, pair.lock]);
+            Ok(pairs
+                .chain(self.extra_paths.iter().copied())
+                .map(|path| pins::TreeEntry {
+                    path: path.to_string(),
+                    link: false,
+                })
+                .collect())
         }
     }
 
@@ -833,6 +902,28 @@ mod tests {
         assert!(last.contains(&"--offline".to_string()), "{last:?}");
     }
 
+    /// In CI zizmor runs offline and is handed no token, even where `gh`
+    /// answers, because the online audits run in the shared workflows job.
+    #[test]
+    fn zizmor_runs_offline_in_ci_whatever_gh_answers() {
+        let runner = FakeRunner::all_installed().in_ci();
+        let (rows, _) = gate(&runner);
+        let zizmor = rows
+            .iter()
+            .find(|row| row.step == "zizmor")
+            .expect("zizmor ran");
+        assert_eq!(zizmor.outcome, Outcome::Passed("offline".to_string()));
+        let last = runner.ran().pop().expect("a command");
+        assert!(last.contains(&"--offline".to_string()), "{last:?}");
+        let env = runner
+            .envs
+            .borrow()
+            .last()
+            .cloned()
+            .expect("an environment");
+        assert!(!env.contains(&"GH_TOKEN".to_string()), "{env:?}");
+    }
+
     /// A pin file nothing can read stops the gate at its first row, before any
     /// tool runs.
     #[test]
@@ -847,6 +938,31 @@ mod tests {
             text.contains(&format!("{} cannot be read", pins::PINS)),
             "{text}"
         );
+    }
+
+    /// A committed mise configuration beside the two pairs stops the gate at
+    /// the pin rules, before any tool runs, because mise would merge it and its
+    /// lockfile over the files those rules read.
+    #[test]
+    fn a_stray_mise_configuration_stops_the_gate() {
+        // A stray lockfile's name holds `mise.lock`, and its remedy is still
+        // removal: a relock would read the configuration the rule refuses.
+        for stray in ["mise.local.toml", ".mise.lock"] {
+            let runner = FakeRunner::all_installed().with_path(stray);
+            let (rows, text) = gate(&runner);
+            assert_eq!(rows.len(), 1, "{stray}");
+            assert_eq!(rows[0].step, "pins");
+            assert_eq!(
+                rows[0].outcome,
+                Outcome::Unrun("remove each file and link named above".to_string()),
+                "{stray}"
+            );
+            assert!(runner.ran().is_empty(), "a tool ran before the pin rules");
+            assert!(
+                text.contains(&format!("{stray:?} is mise configuration beside mise.toml")),
+                "{text}"
+            );
+        }
     }
 
     /// `--rows` prints the pin rules and every row, one line each, and runs

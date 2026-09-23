@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Environment variables that describe this crate rather than the workspace.
@@ -84,6 +84,27 @@ pub trait Runner {
     /// would otherwise look one up are then the same file by construction,
     /// rather than three lookups agreeing.
     fn resolve(&self, tool: &str) -> Option<PathBuf>;
+
+    /// The value this process holds for the environment variable `name`, or
+    /// `None` when it is unset or not unicode.
+    ///
+    /// A test runner overrides this, so a gate case never reads the
+    /// environment its own test binary runs in.
+    fn env_var(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+
+    /// Every entry at the repository root and every file under the
+    /// directories mise reads configuration from, which the stray
+    /// configuration rule reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns the sentence a result row carries when the tree cannot be
+    /// listed.
+    fn config_paths(&self) -> Result<Vec<crate::pins::TreeEntry>, String> {
+        crate::pins::config_paths(Path::new("."))
+    }
 }
 
 /// The `Runner` that spawns real child processes.
@@ -139,7 +160,16 @@ impl Runner for Processes {
         // the answer keeps the path independent of how the two interleave.
         let mut child = Command::new("mise");
         scrub(&mut child);
+        // mise.toml alone: no .tool-versions, no environment file and no
+        // per-platform file, so a committed mise.local.toml, mise.<env>.toml
+        // or .tool-versions cannot choose the binary. On Windows a name set
+        // here replaces any spelling of it this process inherited, because the
+        // child environment matches names without case.
         let output = child
+            .env("MISE_OVERRIDE_CONFIG_FILENAMES", crate::pins::PINS)
+            .env("MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES", "none")
+            .env("MISE_ENV", "")
+            .env("MISE_AUTO_ENV", "false")
             .args(["which", tool])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
