@@ -1,0 +1,11 @@
+# Builds the mods against Ember's checkout in vendor/ rather than the crates.io
+# release, for work that changes both repositories at once. Cargo reads this
+# file only when a command names it:
+#
+#     cargo --config .cargo/ember-local.toml build
+#
+# The patch rewrites Cargo.lock, and every cargo command the gate runs is
+# --locked, so the gate refuses a patched lockfile. `git checkout Cargo.lock`
+# restores it before a push.
+[patch.crates-io]
+ember-sdk = { path = "vendor/enshrouded-ember/crates/ember-sdk" }

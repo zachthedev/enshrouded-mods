@@ -150,12 +150,12 @@ no cooldown file of its own: every version bump comes through Renovate, and the
 preset `.github/renovate.json` extends holds the cooldown. `renovate.json` adds
 what is true of this repository alone, and says why beside each entry.
 
-`ember-sdk` is a path dependency into the submodule at `vendor/enshrouded-ember`,
-and the requirement beside the path holds for the crates.io release. Ember's
-version moves first, then one change here moves the submodule pointer and the
-requirement together. Renovate moves the pointer with no cooldown, because the
-submodule is this author's own repository and a git ref carries no release
-timestamp for a cooldown to read.
+`ember-sdk` comes from crates.io, and Renovate takes a new release of it with no
+cooldown, because the crate is this author's own. For a change that spans both
+repositories, `.cargo/ember-local.toml` points it at Ember's checkout under
+`vendor/`; [docs/dev.md](docs/dev.md#building-against-embers-source) says how.
+Renovate moves that submodule's pointer with no cooldown as well, because a git
+ref carries no release timestamp for a cooldown to read.
 
 The gate's `deny` row runs `cargo deny check licenses bans sources`.
 Advisories are not a row, because an advisory published overnight would turn
@@ -199,15 +199,19 @@ to change what a release says, edit the release pull request before merging
 it. A red release pull request is never merged with `--admin`, because the
 bypass also skips the required checks.
 
-A commit that changes a mod's packaged files releases that mod. The commit
-type sets the changelog section and the bump size, and below 1.0.0 a `feat`
-bumps the patch and a breaking change the minor. The workspace starts at 0.1.0
-because nothing depends on it yet, and `0.x` promises no compatibility.
+A commit that changes the packaged files of a mod or of `crates/mods-common`
+releases every mod: the workspace shares one version, so release-plz moves
+every releasable crate together. mods-common takes a tag and no GitHub release,
+and a mod's release notes carry mods-common's commits. The commit type sets the
+changelog section and the bump size, and below 1.0.0 a `feat` bumps the patch
+and a breaking change the minor. The workspace starts at 0.1.0 because nothing
+depends on it yet, and `0.x` promises no compatibility.
 
-No mod is released while `ember-sdk` is a path dependency into the submodule:
-release-plz cannot package a tagged version without the submodule, and
-`cargo xtask package` refuses a loader it cannot name by a released Ember
-version. The first release follows `ember-sdk` onto crates.io.
+No mod is released until Ember's release carries the loader, because
+`cargo xtask package` downloads it from there. The command also refuses a
+lockfile in which any Ember crate comes from somewhere other than crates.io: a
+directory or a git checkout can carry a release's version number without its
+code.
 
 A failed release is recovered by cutting the next version, never by moving a
 tag. Only the releaser app can create a tag.

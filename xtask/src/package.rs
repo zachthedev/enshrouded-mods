@@ -333,40 +333,159 @@ fn is_digest(digest: &str) -> bool {
 // The Ember release a bundle takes its loader from
 // ///////////////////////////////////////////////
 
-/// The version of [`EMBER_SDK`] the lockfile resolves, which is the version the
-/// mod is compiled against.
+/// The source line cargo writes for a crate that comes from crates.io.
 ///
-/// The lockfile rather than the requirement in the manifest: a requirement
-/// admits a range, and the release whose loader matches this build is the one
-/// version cargo settled on.
-///
-/// A path dependency has no registry version to settle on, so cargo records the
-/// placeholder the vendored crate declares. That value names no release, and
-/// [`UNRELEASED`] is where the download route refuses it.
-///
-/// # Errors
-///
-/// Returns an error when the lockfile records no such package, or records it
-/// more than once.
-pub fn ember_version(lockfile: &str) -> anyhow::Result<String> {
+/// Cargo writes the index's canonical address whichever protocol fetched it, so
+/// one string covers the sparse and the git index alike.
+const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
+
+/// The prefix every crate in Ember's workspace is named with.
+const EMBER_PREFIX: &str = "ember-";
+
+/// What the lockfile records for one package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Locked {
+    /// The package's name.
+    pub name: String,
+    /// The version cargo settled on, which is the version the mod is compiled
+    /// against.
+    pub version: String,
+    /// Where that version came from. Cargo writes no source for a crate that
+    /// comes from a directory.
+    pub source: Option<String>,
+}
+
+/// One lockfile package and the dependencies it names.
+struct Entry {
+    locked: Locked,
+    dependencies: Vec<String>,
+}
+
+/// Every package the lockfile records.
+fn entries(lockfile: &str) -> anyhow::Result<Vec<Entry>> {
     let lock: toml::Value = toml::from_str(lockfile).context("parsing the lockfile")?;
     let packages = lock
         .get("package")
         .and_then(toml::Value::as_array)
         .context("the lockfile records no packages")?;
-    let mut versions: Vec<String> = packages
+    Ok(packages
         .iter()
-        .filter(|package| package.get("name").and_then(toml::Value::as_str) == Some(EMBER_SDK))
-        .filter_map(|package| package.get("version").and_then(toml::Value::as_str))
-        .map(str::to_string)
-        .collect();
-    versions.dedup();
+        .filter_map(|package| {
+            let text = |key: &str| package.get(key).and_then(toml::Value::as_str);
+            let locked = Locked {
+                name: text("name")?.to_string(),
+                version: text("version")?.to_string(),
+                source: text("source").map(str::to_string),
+            };
+            let dependencies = package
+                .get("dependencies")
+                .and_then(toml::Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(toml::Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(Entry {
+                locked,
+                dependencies,
+            })
+        })
+        .collect())
+}
 
-    match versions.len() {
-        1 => Ok(versions.remove(0)),
-        0 => bail!("the lockfile records no {EMBER_SDK}, so nothing says which Ember release fits"),
-        _ => bail!("the lockfile records {EMBER_SDK} at {versions:?}, so no one release fits"),
+/// The one entry for [`EMBER_SDK`].
+fn sdk_entry(entries: &[Entry]) -> anyhow::Result<&Entry> {
+    let mut found: Vec<&Entry> = entries
+        .iter()
+        .filter(|entry| entry.locked.name == EMBER_SDK)
+        .collect();
+    found.dedup_by(|one, other| one.locked == other.locked);
+
+    match found.as_slice() {
+        [one] => Ok(one),
+        [] => {
+            bail!("the lockfile records no {EMBER_SDK}, so nothing says which Ember release fits")
+        }
+        many => {
+            let records: Vec<&Locked> = many.iter().map(|entry| &entry.locked).collect();
+            bail!("the lockfile records {EMBER_SDK} as {records:?}, so no one release fits")
+        }
     }
+}
+
+/// The entry a lockfile dependency line names.
+///
+/// Cargo writes the name alone where the lockfile holds one package of that
+/// name, and adds the version, then the source in parentheses, as far as it
+/// takes to tell two apart.
+fn resolve<'a>(entries: &'a [Entry], dependency: &str) -> anyhow::Result<&'a Entry> {
+    let mut words = dependency.splitn(3, ' ');
+    let name = words.next().unwrap_or_default();
+    let version = words.next();
+    let source = words
+        .next()
+        .map(|source| source.trim_start_matches('(').trim_end_matches(')'));
+    let found: Vec<&Entry> = entries
+        .iter()
+        .filter(|entry| {
+            entry.locked.name == name
+                && version.is_none_or(|version| entry.locked.version == version)
+                && source.is_none_or(|source| entry.locked.source.as_deref() == Some(source))
+        })
+        .collect();
+
+    match found.as_slice() {
+        [one] => Ok(one),
+        [] => bail!("the lockfile names the dependency {dependency:?} and records no such package"),
+        _ => bail!(
+            "the lockfile names the dependency {dependency:?}, which fits more than one package"
+        ),
+    }
+}
+
+/// The lockfile's record of [`EMBER_SDK`].
+///
+/// The lockfile rather than the requirement in the manifest: a requirement
+/// admits a range, and the release whose loader matches this build is the one
+/// version cargo settled on.
+///
+/// # Errors
+///
+/// Returns an error when the lockfile records no such package, or records it
+/// more than once.
+pub fn ember_locked(lockfile: &str) -> anyhow::Result<Locked> {
+    Ok(sdk_entry(&entries(lockfile)?)?.locked.clone())
+}
+
+/// Every Ember crate the mod compiles: [`EMBER_SDK`] first, then each crate
+/// named with [`EMBER_PREFIX`] that it reaches through the lockfile.
+///
+/// # Errors
+///
+/// Returns an error when the lockfile does not record the sdk once, or names a
+/// dependency it records no single package for.
+pub fn ember_family(lockfile: &str) -> anyhow::Result<Vec<Locked>> {
+    let entries = entries(lockfile)?;
+    let mut reached: Vec<&Entry> = vec![sdk_entry(&entries)?];
+    let mut next = 0;
+    while let Some(entry) = reached.get(next).copied() {
+        next += 1;
+        for dependency in &entry.dependencies {
+            if !dependency.starts_with(EMBER_PREFIX) {
+                continue;
+            }
+            let found = resolve(&entries, dependency)?;
+            if !reached.iter().any(|seen| std::ptr::eq(*seen, found)) {
+                reached.push(found);
+            }
+        }
+    }
+    Ok(reached
+        .into_iter()
+        .map(|entry| entry.locked.clone())
+        .collect())
 }
 
 /// The tag Ember releases `version` under.
@@ -378,28 +497,30 @@ pub fn ember_tag(version: &str) -> String {
     format!("v{version}")
 }
 
-/// The version a path dependency resolves to, which no release carries.
+/// The Ember release tag for the sdk version `lockfile` resolves.
 ///
-/// Cargo writes it for a crate that comes from a directory rather than a
-/// registry, so a lockfile holding it says the mod is built against the
-/// vendored checkout.
-const UNRELEASED: &str = "0.0.0";
-
-/// The Ember release tag for the version `lockfile` resolves.
+/// Only a build whose Ember crates all come from crates.io names a release. A
+/// crate from a directory or from git carries whatever its checkout says, so
+/// its version matches a release's number without matching its code.
 ///
 /// # Errors
 ///
-/// Returns an error when the lockfile does not resolve one version, and when
-/// that version is [`UNRELEASED`], which is a directory rather than a release.
+/// Returns an error when the lockfile does not resolve one sdk version, and
+/// when any Ember crate the sdk reaches does not come from crates.io.
 pub fn ember_release(lockfile: &str) -> anyhow::Result<String> {
-    let version = ember_version(lockfile)?;
-    ensure!(
-        version != UNRELEASED,
-        "{EMBER_SDK} resolves to {UNRELEASED}, the version a path dependency carries, so it names \
-         no {EMBER} release to take the loader from; point the requirement at a published version, \
-         or pass --ember-loader with a loader already on disk"
-    );
-    Ok(ember_tag(&version))
+    let family = ember_family(lockfile)?;
+    for locked in &family {
+        ensure!(
+            locked.source.as_deref() == Some(CRATES_IO),
+            "{} {} comes from {}, not crates.io, so no {EMBER} release is known to match it; \
+             build against the published crates, or pass --ember-loader with a loader already on \
+             disk",
+            locked.name,
+            locked.version,
+            locked.source.as_deref().unwrap_or("a directory")
+        );
+    }
+    Ok(ember_tag(&family[0].version))
 }
 
 // ///////////////////////////////////////////////
@@ -921,10 +1042,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        Bundle, EMBER, EMBER_SDK, LOADER, Local, MODS, MODS_DIRECTORY, Mod, Release, Request, SUMS,
-        Source, TARGET, Tag, artifact, build_command, bundle, digest, ember_release, ember_tag,
-        ember_version, is_release, mods, read_mod, recorded_digest, refuse_escaping, run,
-        sums_line, verified,
+        Bundle, EMBER, EMBER_SDK, LOADER, Local, Locked, MODS, MODS_DIRECTORY, Mod, Release,
+        Request, SUMS, Source, TARGET, Tag, artifact, build_command, bundle, digest, ember_family,
+        ember_locked, ember_release, ember_tag, is_release, mods, read_mod, recorded_digest,
+        refuse_escaping, run, sums_line, verified,
     };
     use crate::runner::{Exit, Runner};
 
@@ -1519,57 +1640,194 @@ mod tests {
 [[package]]
 name = \"anyhow\"
 version = \"1.0.104\"
+source = \"registry+https://github.com/rust-lang/crates.io-index\"
 
 [[package]]
 name = \"ember-sdk\"
 version = \"0.4.2\"
+source = \"registry+https://github.com/rust-lang/crates.io-index\"
 ";
         assert_eq!(
-            ember_version(lockfile).expect("the lockfile records the sdk"),
-            "0.4.2"
+            ember_locked(lockfile).expect("the lockfile records the sdk"),
+            Locked {
+                name: "ember-sdk".to_string(),
+                version: "0.4.2".to_string(),
+                source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
+            }
         );
         assert_eq!(ember_tag("0.4.2"), "v0.4.2");
 
         let absent = "[[package]]\nname = \"anyhow\"\nversion = \"1.0.104\"\n";
         assert!(
-            ember_version(absent).is_err(),
+            ember_locked(absent).is_err(),
             "a lockfile without the sdk named a release anyway"
         );
         assert!(
-            ember_version("[[package]]\nname = \"anyhow\"\n").is_err(),
+            ember_locked("[[package]]\nname = \"anyhow\"\n").is_err(),
             "a lockfile with no version named a release anyway"
         );
         assert!(
-            ember_version("this is not toml = = =").is_err(),
+            ember_locked("this is not toml = = =").is_err(),
             "an unparseable lockfile named a release anyway"
         );
     }
 
-    /// A path dependency resolves to a placeholder no release carries, and the
-    /// release lookup refuses it there rather than sending it to a release
-    /// lookup that can only report a missing tag.
-    ///
-    /// The placeholder is spelled out here rather than taken from the constant,
-    /// so the case pins which version is refused instead of agreeing with
-    /// whatever the constant says today.
-    #[test]
-    fn the_release_lookup_refuses_the_placeholder_a_path_dependency_carries() {
-        let named = |version: &str| {
-            format!("[[package]]\nname = \"{EMBER_SDK}\"\nversion = \"{version}\"\n")
-        };
+    /// A lockfile of `(name, version, source, dependencies)` packages, in the
+    /// shape cargo writes one.
+    fn lockfile(packages: &[(&str, &str, Option<&str>, &[&str])]) -> String {
+        use std::fmt::Write as _;
 
+        let mut text = String::new();
+        for (name, version, source, dependencies) in packages {
+            writeln!(
+                text,
+                "[[package]]\nname = \"{name}\"\nversion = \"{version}\""
+            )
+            .expect("writing to a string");
+            if let Some(source) = source {
+                writeln!(text, "source = \"{source}\"").expect("writing to a string");
+            }
+            if !dependencies.is_empty() {
+                text.push_str("dependencies = [\n");
+                for dependency in *dependencies {
+                    writeln!(text, " \"{dependency}\",").expect("writing to a string");
+                }
+                text.push_str("]\n");
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    /// Only a build whose Ember crates all come from crates.io names a
+    /// release. A directory or a git checkout carries a version that can match
+    /// a release's number without matching its code, so each is refused
+    /// wherever it sits among the crates the sdk reaches, and the refusal names
+    /// the crate, its version, where it came from, and what to do instead.
+    ///
+    /// The crates.io source is spelled out here rather than taken from the
+    /// constant, so each case pins which source is accepted instead of agreeing
+    /// with whatever the constant says today.
+    #[test]
+    fn the_release_lookup_takes_only_ember_crates_from_crates_io() {
+        let crates_io = Some("registry+https://github.com/rust-lang/crates.io-index");
+        let git = "git+https://github.com/zachthedev/enshrouded-ember?rev=a5bdfb7#a5bdfb7";
+        let other = "sparse+https://registry.example/index/";
+
+        let published = lockfile(&[
+            ("anyhow", "1.0.104", crates_io, &[]),
+            ("ember-enshrouded", "0.4.2", crates_io, &["ember-platform"]),
+            ("ember-platform", "0.4.2", crates_io, &[]),
+            (
+                "ember-sdk",
+                "0.4.2",
+                crates_io,
+                &["anyhow", "ember-enshrouded"],
+            ),
+        ]);
         assert_eq!(
-            ember_release(&named("0.4.2")).expect("a published version names a release"),
+            ember_release(&published).expect("Ember crates from crates.io name a release"),
             "v0.4.2"
         );
 
-        let err = ember_release(&named("0.0.0")).expect_err("the placeholder is refused");
-        let said = format!("{err:#}");
-        assert!(said.contains("0.0.0"), "got {said}");
-        assert!(
-            said.contains("--ember-loader"),
-            "the refusal does not say what to do instead: {said}"
+        // The case, its lockfile, the crate and version the refusal names, and
+        // the source it names.
+        let refused: [(&str, String, &str, &str); 5] = [
+            (
+                "the sdk from a directory",
+                lockfile(&[("ember-sdk", "0.1.0", None, &[])]),
+                "ember-sdk 0.1.0",
+                "a directory",
+            ),
+            (
+                "the sdk from git",
+                lockfile(&[("ember-sdk", "0.1.0", Some(git), &[])]),
+                "ember-sdk 0.1.0",
+                git,
+            ),
+            (
+                "the sdk from another registry",
+                lockfile(&[("ember-sdk", "0.1.0", Some(other), &[])]),
+                "ember-sdk 0.1.0",
+                other,
+            ),
+            (
+                "a sibling from a directory",
+                lockfile(&[
+                    ("ember-platform", "0.1.1", None, &[]),
+                    ("ember-sdk", "0.1.0", crates_io, &["ember-platform"]),
+                ]),
+                "ember-platform 0.1.1",
+                "a directory",
+            ),
+            (
+                "a sibling reached through another",
+                lockfile(&[
+                    ("ember-enshrouded", "0.1.0", crates_io, &["ember-platform"]),
+                    ("ember-platform", "0.1.1", Some(git), &[]),
+                    ("ember-sdk", "0.1.0", crates_io, &["ember-enshrouded"]),
+                ]),
+                "ember-platform 0.1.1",
+                git,
+            ),
+        ];
+        for (label, text, named, source) in refused {
+            let err = ember_release(&text).expect_err(&format!("{label} named a release"));
+            let said = format!("{err:#}");
+            assert!(
+                said.contains(named),
+                "{label}: the crate and its version are missing: {said}"
+            );
+            assert!(
+                said.contains(source),
+                "{label}: the source is missing: {said}"
+            );
+            assert!(
+                said.contains("--ember-loader"),
+                "{label}: the refusal does not say what to do instead: {said}"
+            );
+        }
+    }
+
+    /// Where the lockfile holds two packages of one name, cargo names each by
+    /// version, and the walk follows the one the sdk names rather than the
+    /// first it meets. A name the lockfile cannot settle is refused.
+    #[test]
+    fn the_walk_follows_the_package_the_dependency_line_names() {
+        let crates_io = Some("registry+https://github.com/rust-lang/crates.io-index");
+        let family = |named: &str| {
+            lockfile(&[
+                ("ember-platform", "0.3.0", None, &[]),
+                ("ember-platform", "0.4.2", crates_io, &[]),
+                ("ember-sdk", "0.4.2", crates_io, &[named]),
+            ])
+        };
+
+        assert_eq!(
+            ember_release(&family("ember-platform 0.4.2"))
+                .expect("the published platform is the one named"),
+            "v0.4.2"
         );
+        let said = format!(
+            "{:#}",
+            ember_release(&family("ember-platform 0.3.0"))
+                .expect_err("the platform from a directory is the one named")
+        );
+        assert!(said.contains("ember-platform 0.3.0"), "got {said}");
+
+        let said = format!(
+            "{:#}",
+            ember_family(&family("ember-platform"))
+                .expect_err("a bare name over two packages is refused")
+        );
+        assert!(said.contains("more than one package"), "got {said}");
+
+        let missing = lockfile(&[("ember-sdk", "0.4.2", crates_io, &["ember-platform"])]);
+        let said = format!(
+            "{:#}",
+            ember_family(&missing).expect_err("a named crate with no package is refused")
+        );
+        assert!(said.contains("no such package"), "got {said}");
     }
 
     /// This repository's own lockfile names one Ember release, so the command
@@ -1596,13 +1854,20 @@ version = \"0.4.2\"
             .collect();
         assert_eq!(scanned.len(), 1, "the lockfile records {scanned:?}");
 
-        let version = ember_version(&lockfile).expect("the lockfile records the sdk");
-        assert_eq!(version, scanned[0], "the reader and the lockfile disagree");
-        assert!(
-            is_release(&version),
-            "the sdk resolves to {version}, which is not one release"
+        let locked = ember_locked(&lockfile).expect("the lockfile records the sdk");
+        assert_eq!(
+            locked.version, scanned[0],
+            "the reader and the lockfile disagree"
         );
-        assert!(ember_tag(&version).starts_with('v'));
+        assert!(
+            is_release(&locked.version),
+            "the sdk resolves to {}, which is not one release",
+            locked.version
+        );
+        assert_eq!(
+            ember_release(&lockfile).expect("the committed lockfile names a release"),
+            format!("v{}", scanned[0])
+        );
     }
 
     // ///// The loader /////
@@ -1945,22 +2210,21 @@ version = \"0.4.2\"
         );
     }
 
-    /// The download route refuses a placeholder version, and refuses it before
-    /// it builds anything, rather than asking a release lookup for a tag no
-    /// release carries.
+    /// The download route refuses an sdk that comes from a directory, and
+    /// refuses it before it builds anything, rather than downloading a loader
+    /// built from code the mod was not compiled against.
     ///
     /// The lockfile is written into the sandbox rather than taken from the copy
-    /// `workspace` lays down: the case has to present a placeholder whatever
-    /// version this repository's own requirement resolves. The version is the
-    /// literal cargo writes for a workspace that declares no release, so the
-    /// case does not agree with the constant it is checking.
+    /// `workspace` lays down: the case has to present a directory whatever this
+    /// repository's own lockfile records. The version is one Ember released, so
+    /// the missing source is the only thing left to refuse.
     #[test]
-    fn the_download_route_refuses_a_version_no_release_carries() {
-        let home = sandbox("placeholder");
+    fn the_download_route_refuses_an_sdk_from_a_directory() {
+        let home = sandbox("directory");
         let root = workspace(home.path());
         put(
             &root.join("Cargo.lock"),
-            format!("[[package]]\nname = \"{EMBER_SDK}\"\nversion = \"0.0.0\"\n").as_bytes(),
+            format!("[[package]]\nname = \"{EMBER_SDK}\"\nversion = \"0.1.0\"\n").as_bytes(),
         );
         let runner = BuildingRunner {
             artifact: artifact(&root.join("target"), "private_chests.dll"),
@@ -1976,10 +2240,10 @@ version = \"0.4.2\"
 
         let mut printed = Vec::new();
         let err = run(&runner, &root, &request, &mut printed)
-            .expect_err("a placeholder version is refused");
+            .expect_err("an sdk from a directory is refused");
 
         let said = format!("{err:#}");
-        assert!(said.contains("0.0.0"), "got {said}");
+        assert!(said.contains("a directory"), "got {said}");
         assert!(
             said.contains("--ember-loader"),
             "the refusal does not say what to do instead: {said}"

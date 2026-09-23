@@ -55,13 +55,11 @@ jobs:
           # The pull request itself.
           permission-pull-requests: write
       # The whole history, because release-plz reads every commit since each
-      # crate's last tag, and Ember's checkout under vendor/, because cargo
-      # resolves the workspace against it. release-plz pushes with the app's
-      # token on its own, so none stays in the checkout.
+      # crate's last tag. release-plz pushes with the app's token on its own,
+      # so none stays in the checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          submodules: recursive
           persist-credentials: false
       # The release is exact, because an unpinned one resolves at run time and
       # a resolved release is under no cooldown. The action installs it with
@@ -108,7 +106,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          submodules: recursive
           persist-credentials: false
       - id: release
         uses: release-plz/action@d6c56271d640b6c1b61d1e00593641c400a9f4bd # v0.5.138
@@ -142,7 +139,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: recursive
           persist-credentials: false
       # GH_TOKEN, because the command downloads Ember's release assets through
       # gh. The job token reads a public release.

@@ -11,13 +11,6 @@
 # Nothing here reaches a registry: every crate is `publish = false`, and a mod
 # ships as a bundle on its GitHub release. git_only reads each crate's last
 # version from its tag rather than from crates.io.
-#
-# release-plz compares a crate against its last tag by packaging the tagged
-# version in a worktree, and that worktree carries no submodule. While
-# ember-sdk is a path dependency into vendor/enshrouded-ember, `cargo package`
-# there cannot read it, so every release after the first fails
-# (release-plz/release-plz#2983; measured at 0.3.168). The first release waits
-# for ember-sdk to come from crates.io.
 git_only = true
 git_tag_name = "{{ package }}-v{{ version }}"
 # The release is created as a draft, and cd.yml's publish job attaches the
@@ -68,12 +61,20 @@ pr_body = """
 Managed by zachthedev-releaser.
 """
 
-# A helper crate has no release of its own: the mod's library bundles it.
-# Whether a commit touching it alone still releases the mod is unmeasured: the
-# measurement needs a second release, which the defect below blocks.
+# The helper crate every mod bundles. It releases so that a commit touching it
+# alone releases the mods too: the workspace shares one version, so release-plz
+# moves every releasable crate together, and a crate held back with
+# `release = false` moves nothing. It gets a tag, which git_only reads its last
+# version from, and no GitHub release, since nothing ships it on its own.
 [[package]]
 name = "mods-common"
-release = false
+git_release_enable = false
+
+# Each release's notes carry the helper's commits, so a release that a
+# mods-common change caused says what changed.
+[[package]]
+name = "private-chests"
+changelog_include = ["mods-common"]
 
 [[package]]
 name = "xtask"

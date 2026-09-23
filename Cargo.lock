@@ -197,6 +197,8 @@ dependencies = [
 [[package]]
 name = "ember-enshrouded"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bbd6eaa5ce64fef76c902f5ffc72b19d27ecbf692a88fd3eded107c09868b98"
 dependencies = [
  "ember-holistic",
  "ember-platform",
@@ -208,6 +210,8 @@ dependencies = [
 [[package]]
 name = "ember-holistic"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e61970bc7dc52d0d3e40582509252c1ce1e22994fccf0d90340430f26d1c47f3"
 dependencies = [
  "ember-platform",
  "serde",
@@ -218,6 +222,8 @@ dependencies = [
 [[package]]
 name = "ember-platform"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25117794c3b2b6b278c7fd143b7e2351e568d02f59346d05883ed89e1c7a3638"
 dependencies = [
  "minhook",
  "pelite",
@@ -228,6 +234,8 @@ dependencies = [
 [[package]]
 name = "ember-sdk"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "177e163a0233957bcf1696a856494d6dc67c0aed6a8aa23bfff7b7406cc0bb35"
 dependencies = [
  "ember-enshrouded",
  "ember-holistic",
@@ -243,6 +251,8 @@ dependencies = [
 [[package]]
 name = "ember-sigs"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b9dade373823613818d1baf7175e69f8804512f29e0d7a6b739b9c31d2d6b49"
 dependencies = [
  "ember-platform",
  "serde",

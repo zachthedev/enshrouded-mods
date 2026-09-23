@@ -12,8 +12,9 @@
 - [mise](https://mise.jdx.dev), for every gate tool that rustup, cargo and bun
   do not provide. `mise.toml` pins a version per tool and `mise.lock` records
   a checksum per platform, so an install takes the recorded artifact or fails.
-- Ember, as the submodule at `vendor/enshrouded-ember`. `.gitmodules` pins the
-  repository and `Cargo.toml` points each Ember crate at it.
+- Ember, as the submodule at `vendor/enshrouded-ember`, for `cargo xtask server`
+  and `schema`, which run Ember's xtask from it. The mods themselves build
+  against Ember's crates.io release, at the requirement `Cargo.toml` names.
 
 Install mise, then:
 
@@ -65,9 +66,8 @@ cargo xtask schema extract    # the reflection schema, out of that server
 cargo xtask check             # the gate
 ```
 
-An existing clone catches up with `git submodule update --init`. The workspace
-builds the mod against the submodule, so nothing else is needed for the paths
-to resolve.
+An existing clone catches up with `git submodule update --init`. The gate needs
+no submodule; `server` and `schema` do.
 
 The fetch pulls a dedicated server from SteamCMD into `.cache`, which is
 gitignored. Anonymous login works for app 2278520, so no credentials are
@@ -148,9 +148,25 @@ version, as Prerequisites says.
 
 None.
 
-## Building against another Ember checkout
+## Building against Ember's source
 
-To build against a checkout of Ember somewhere else, put a `[patch.crates-io]`
-block in a `.cargo/config.toml` in a directory **above** this repository. Cargo
-merges config from every parent directory, and keeping it outside means this
-repository's own `.cargo/config.toml` stays untouched.
+The mods build against Ember's crates.io release. For a change that spans both
+repositories, `.cargo/ember-local.toml` points `ember-sdk` at the submodule:
+
+```sh
+cargo --config .cargo/ember-local.toml build
+```
+
+Cargo reads that file only when a command names it. The patch rewrites
+`Cargo.lock`, and the gate runs cargo `--locked`, so it refuses the patched
+lockfile. Restore the lockfile before a push:
+
+```sh
+git checkout Cargo.lock
+```
+
+That reverts every uncommitted lockfile edit, not the patch alone, so commit a
+dependency change before building against Ember's source.
+
+Renovate keeps the submodule at Ember's newest commit on main, which can run
+ahead of the release on crates.io.

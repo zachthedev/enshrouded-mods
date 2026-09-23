@@ -6,7 +6,14 @@
   },
   "packageRules": [
     {
-      "description": "vendor/enshrouded-ember is this author's own repository. A git ref carries no release timestamp, so under timestamp-required the pointer never moves unless the cooldown is lifted for it.",
+      "description": "ember-sdk is this author's own crate, so a new release is taken the day it is published rather than after the cooldown.",
+      "matchDatasources": ["crate"],
+      "matchDepNames": ["ember-sdk"],
+      "minimumReleaseAge": null,
+      "schedule": ["at any time"]
+    },
+    {
+      "description": "vendor/enshrouded-ember is this author's own repository, kept for `cargo xtask server` and `schema` and for building against Ember's source. A git ref carries no release timestamp, so under timestamp-required the pointer never moves unless the cooldown is lifted for it.",
       "matchManagers": ["git-submodules"],
       "minimumReleaseAge": null,
       "schedule": ["at any time"]

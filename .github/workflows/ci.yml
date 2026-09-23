@@ -40,12 +40,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      # Ember is a submodule under vendor/, and the workspace builds against it.
       # This job pushes nothing, so the job token does not stay in the checkout
       # for the steps that follow it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: recursive
           persist-credentials: false
       # The one third-party action. actions/cache needs hand-written keys for
       # the registry, the git database and the target directory, and this one
