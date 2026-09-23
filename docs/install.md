@@ -55,11 +55,18 @@ Get-FileHash private-chests-v<version>.zip -Algorithm SHA256
 ```
 
 The build that produced the archive is attested by GitHub, so the archive can
-also be held to the workflow run that made it:
+also be held to the workflow run that made it. The shared publish workflow
+signs the attestation, so the command names it beside the repository:
 
 ```sh
-gh attestation verify private-chests-v<version>.zip --repo zachthedev/enshrouded-mods
+gh attestation verify private-chests-v<version>.zip \
+  --repo zachthedev/enshrouded-mods \
+  --signer-workflow zachthedev/.github/.github/workflows/publish.yml
 ```
+
+A pass proves the archive was built in this repository and signed by that
+workflow. It does not name the tag; the release page and its `SHA256SUMS` tie
+the archive to its version.
 
 ## Upgrade
 
