@@ -95,7 +95,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{Delegate, EMBER_XTASK};
-    use crate::runner::{Exit, Runner};
+    use crate::runner::{Captured, Exit, Runner};
 
     /// A `Runner` that records commands and never spawns one.
     struct FakeRunner {
@@ -122,6 +122,18 @@ mod tests {
         fn run(&self, command: &[&str], _env: &[(&str, &str)]) -> io::Result<Exit> {
             self.ran.borrow_mut().push(command.join(" "));
             Ok(Exit::Ok)
+        }
+
+        fn output(
+            &self,
+            _command: &[&str],
+            _env: &[(&str, &str)],
+            _input: Option<&str>,
+        ) -> io::Result<Captured> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "no row runs here",
+            ))
         }
 
         fn read_file(&self, _relative: &str) -> Option<String> {

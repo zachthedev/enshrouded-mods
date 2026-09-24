@@ -8,17 +8,27 @@
 //! A tool that is not installed is reported by name with the command that
 //! installs it, and the gate stops there. It is never skipped quietly, because
 //! a gate that reports a pass for a row it did not run is worse than no gate.
+//! Every row that walks the tree hands its tool the tracked files it reads,
+//! proves from the tool's own report that each one was checked, and fails when
+//! none was.
 //!
 //! Every command goes through a [`Runner`], so a test drives the table with a
 //! fake and spawns nothing. The one filesystem side effect outside the runner
 //! is the canary workflow, written to a temporary directory of its own.
 
 use std::io::{self, Write};
+use std::path::Path;
 
 use owo_colors::{OwoColorize, Stream};
 
-use crate::pins;
-use crate::runner::{Exit, Runner};
+use crate::runner::{Captured, Exit, Runner};
+use crate::{pins, proof, shellcheck, tree};
+
+/// Every TypeScript project config this repository keeps. It keeps none, since
+/// it holds no TypeScript, so the tree rules refuse any `tsconfig.json` or
+/// `jsconfig.json`, which Bun would apply to the imports of every JavaScript
+/// tool it runs.
+const PROJECT_CONFIGS: &[&str] = &[];
 
 /// Where a row's program comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +38,32 @@ pub enum Program {
     Mise(&'static str),
     /// A program the toolchain or the package manager puts on `PATH`.
     Path(&'static str),
+}
+
+/// What a row proves it read, beyond its exit code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proof {
+    /// The row walks no tree, and its exit code is its result.
+    Exit,
+    /// rustfmt names every file it formats, and every tracked Rust file must
+    /// be among them.
+    Rustfmt,
+    /// taplo names the files it found, which must be the tracked TOML files
+    /// handed to it.
+    Taplo,
+    /// cargo-machete names every directory it analyzed, which must be the
+    /// tracked crates handed to it.
+    Machete,
+    /// Prettier's own `getFileInfo` picks the tracked files it formats, and the
+    /// row hands it exactly those.
+    Prettier,
+    /// actionlint names every workflow it linted, which must be the tracked
+    /// workflows handed to it.
+    Actionlint,
+    /// zizmor names every input it completed, which must cover the tracked
+    /// workflows. A second pass with no config and no ignores holds every job
+    /// passing `secrets: inherit` to the shared workflows.
+    Zizmor,
 }
 
 /// One row of the gate.
@@ -44,6 +80,8 @@ pub struct Step {
     pub install: &'static str,
     /// Variables set for the child, on top of the scrubbed environment.
     pub env: &'static [(&'static str, &'static str)],
+    /// What the row proves it read.
+    pub proof: Proof,
 }
 
 /// What to run when a tool mise owns is absent. One command covers every one
@@ -52,6 +90,14 @@ pub const MISE_INSTALL: &str = "mise install --locked";
 
 /// The rustup command that installs the toolchain a cargo row needs.
 const RUSTUP: &str = "rustup toolchain install";
+
+/// What to run when the Bun packages a row starts are absent.
+const BUN_INSTALL: &str = "bun install";
+
+/// Prettier's command-line entry in the checkout, which Bun runs by its path.
+/// bunx finds a package the checkout lacks on PATH, in a parent
+/// `node_modules` or in its own cache, where a path fails instead.
+const PRETTIER: &str = "./node_modules/prettier/bin/prettier.cjs";
 
 /// The rows that build test artifacts share a target directory of their own
 /// on Windows, where a test build cannot replace the running `xtask.exe` under
@@ -62,27 +108,42 @@ const TEST_ENV: &[(&str, &str)] = if cfg!(windows) {
     &[]
 };
 
+/// The level at which taplo prints its found-files line and zizmor its
+/// completed inputs, set so a contributor's own `RUST_LOG` cannot hide them.
+const REPORTING: &[(&str, &str)] = &[("RUST_LOG", "info")];
+
 /// Every row, in the order they run.
 pub const STEPS: &[Step] = &[
     Step {
         name: "fmt",
-        covers: "Rust formatting",
+        covers: "Rust formatting under rustfmt.toml alone, every tracked Rust file proven formatted",
         program: Program::Path("cargo"),
-        args: &["fmt", "--check"],
+        // --config-path stops rustfmt's search for a nearer config, and
+        // --verbose names each file it formats.
+        args: &[
+            "fmt",
+            "--check",
+            "--",
+            "--config-path",
+            "rustfmt.toml",
+            "--verbose",
+        ],
         install: "rustup component add rustfmt",
         env: &[],
+        proof: Proof::Rustfmt,
     },
     Step {
         name: "taplo",
-        covers: "TOML formatting, over the files .taplo.toml names",
+        covers: "TOML formatting over every tracked TOML file, under .taplo.toml, each proven checked",
         program: Program::Mise("taplo"),
         args: &["fmt", "--check", "--config", ".taplo.toml"],
         install: MISE_INSTALL,
-        env: &[],
+        env: REPORTING,
+        proof: Proof::Taplo,
     },
     Step {
         name: "clippy",
-        covers: "Lints on every target, warnings denied",
+        covers: "Lints on every target, warnings denied, with clippy.toml read from the root alone",
         program: Program::Path("cargo"),
         args: &[
             "clippy",
@@ -95,6 +156,7 @@ pub const STEPS: &[Step] = &[
         ],
         install: "rustup component add clippy",
         env: &[],
+        proof: Proof::Exit,
     },
     Step {
         name: "tests",
@@ -103,6 +165,7 @@ pub const STEPS: &[Step] = &[
         args: &["nextest", "run", "--workspace", "--locked"],
         install: MISE_INSTALL,
         env: TEST_ENV,
+        proof: Proof::Exit,
     },
     Step {
         name: "doctests",
@@ -111,6 +174,7 @@ pub const STEPS: &[Step] = &[
         args: &["test", "--workspace", "--doc", "--locked"],
         install: RUSTUP,
         env: TEST_ENV,
+        proof: Proof::Exit,
     },
     Step {
         name: "doc",
@@ -119,44 +183,70 @@ pub const STEPS: &[Step] = &[
         args: &["doc", "--workspace", "--no-deps", "--locked"],
         install: RUSTUP,
         env: &[("RUSTDOCFLAGS", "-D warnings")],
+        proof: Proof::Exit,
     },
     Step {
         name: "deny",
-        covers: "Licenses, bans and sources, per deny.toml",
+        covers: "Licenses, bans and sources, per deny.toml alone",
         program: Program::Mise("cargo-deny"),
-        args: &["--locked", "check", "licenses", "bans", "sources"],
+        // --config goes ahead of `check`: it is a flag of cargo-deny itself.
+        args: &[
+            "--locked",
+            "--config",
+            "deny.toml",
+            "check",
+            "licenses",
+            "bans",
+            "sources",
+        ],
         install: MISE_INSTALL,
         env: &[],
+        proof: Proof::Exit,
     },
     Step {
         name: "machete",
-        covers: "Dependencies a crate declares and never uses; .ignore keeps vendor/ out",
+        covers: "Dependencies a crate declares and never uses, over every tracked crate, each proven analyzed",
         program: Program::Mise("cargo-machete"),
-        // The one path is the workspace root. With no argument at all, the binary
-        // indexes an argument that is not there and panics.
-        args: &["."],
+        // Each tracked crate's directory is handed over by name, so no ignore
+        // file decides what the walk reaches and the submodule never enters it.
+        args: &["--no-ignore", "--skip-target-dir"],
         install: MISE_INSTALL,
         env: &[],
+        proof: Proof::Machete,
     },
     Step {
         name: "prettier",
-        covers: "Markup, JavaScript and TypeScript formatting",
-        program: Program::Path("bunx"),
-        args: &["--no-install", "--bun", "prettier", "--check", "."],
-        install: "bun install",
+        covers: "Markup, JavaScript and TypeScript formatting over every tracked file Prettier formats, under .prettierrc alone",
+        program: Program::Path("bun"),
+        // --ignore-path names .prettierignore alone, so .gitignore never
+        // narrows the list, --config stops the search for another config, and
+        // --no-editorconfig keeps any .editorconfig from setting an option.
+        args: &[
+            PRETTIER,
+            "--check",
+            "--config",
+            ".prettierrc",
+            "--ignore-path",
+            ".prettierignore",
+            "--no-editorconfig",
+        ],
+        install: BUN_INSTALL,
         env: &[],
+        proof: Proof::Prettier,
     },
     Step {
         name: "actionlint",
-        covers: "Workflow syntax, runner labels, expressions, and run: blocks through ShellCheck",
+        covers: "Workflow syntax, runner labels, expressions, and run: blocks through ShellCheck, every tracked workflow proven linted",
         program: Program::Mise("actionlint"),
-        args: &["-pyflakes="],
+        // -verbose names each file it finished.
+        args: &["-verbose", "-pyflakes="],
         install: MISE_INSTALL,
         env: &[],
+        proof: Proof::Actionlint,
     },
     Step {
         name: "zizmor",
-        covers: "Workflow pinning, credentials, permissions and injection",
+        covers: "Workflow pinning, credentials, permissions and injection, every tracked workflow proven audited, and every secrets: inherit held to the shared workflows",
         program: Program::Mise("zizmor"),
         // .github whole, with ignore handling off. A directory input honors
         // .gitignore files, .git/info/exclude and the global excludes, so a
@@ -172,7 +262,8 @@ pub const STEPS: &[Step] = &[
             ".github",
         ],
         install: MISE_INSTALL,
-        env: &[],
+        env: REPORTING,
+        proof: Proof::Zizmor,
     },
 ];
 
@@ -183,9 +274,18 @@ pub const PINS_STEP: &str = "pins";
 /// `SC2086`.
 const CANARY: &str = "on: push\njobs:\n  canary:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo $GITHUB_REF\n";
 
+/// The same workflow with a directive waiving `SC2086`, which the `ShellCheck`
+/// stand-in refuses.
+const DIRECTIVE_CANARY: &str = "on: push\njobs:\n  canary:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          # shellcheck disable=SC2086\n          echo $GITHUB_REF\n";
+
 /// Whether the canary run reported the finding it was written to trigger.
 fn canary_passed(heard: &str) -> bool {
     heard.contains("SC2086")
+}
+
+/// Whether the directive canary came back with the stand-in's refusal.
+fn directive_refused(heard: &str) -> bool {
+    heard.contains(shellcheck::REFUSAL)
 }
 
 /// How a row ended.
@@ -193,7 +293,7 @@ fn canary_passed(heard: &str) -> bool {
 pub enum Outcome {
     /// The row ran and exited zero, with the note its row carries.
     Passed(String),
-    /// The row ran and exited non-zero.
+    /// The row ran and exited non-zero, or could not prove what it read.
     Failed,
     /// The row could not start, with the sentence saying why.
     Unrun(String),
@@ -252,7 +352,7 @@ impl<'a> Gate<'a> {
             .max(PINS_STEP.len());
         writeln!(
             out,
-            "  {PINS_STEP:width$}  both mise pin files and their lockfiles against pins.rs, before any tool runs"
+            "  {PINS_STEP:width$}  both mise pin files and their lockfiles against pins.rs, and every config each tool reads against tree.rs, before any tool runs"
         )?;
         for step in self.steps {
             writeln!(out, "  {:width$}  {}", step.name, step.covers)?;
@@ -275,8 +375,8 @@ impl<'a> Gate<'a> {
         Ok(!problems.is_empty())
     }
 
-    /// Every way the pin files fall short, with an unreadable file reported as
-    /// a problem of its own.
+    /// Every way the pin files and the tree fall short, with an unreadable file
+    /// reported as a problem of its own.
     fn pin_problems(&self) -> Vec<String> {
         let read = |path: &str| {
             self.runner
@@ -284,7 +384,7 @@ impl<'a> Gate<'a> {
                 .ok_or_else(|| format!("{path} cannot be read"))
         };
         let (main, semver) = (pins::MAIN, pins::SEMVER);
-        match (
+        let mut found = match (
             read(main.pins),
             read(main.lock),
             read(semver.pins),
@@ -293,15 +393,16 @@ impl<'a> Gate<'a> {
             (Ok(pin_text), Ok(lock), Ok(semver_pins), Ok(semver_lock)) => {
                 let mut found = pins::problems(&pin_text, &lock);
                 found.extend(pins::semver_problems(&pin_text, &semver_pins, &semver_lock));
-                found.extend(self.stray_problems());
                 found
             }
             (first, second, third, fourth) => [first, second, third, fourth]
                 .into_iter()
                 .filter_map(Result::err)
-                .chain(self.stray_problems())
                 .collect(),
-        }
+        };
+        found.extend(self.stray_problems());
+        found.extend(self.tree_problems());
+        found
     }
 
     /// Every other mise configuration or lockfile in the tree, or the reason
@@ -313,6 +414,26 @@ impl<'a> Gate<'a> {
         }
     }
 
+    /// Every config a tool reads in place of the one the gate names, and every
+    /// other tree rule's finding, or the reason the tree could not be listed.
+    fn tree_problems(&self) -> Vec<String> {
+        let listing = match self.runner.listing() {
+            Ok(listing) => listing,
+            Err(problem) => return vec![problem],
+        };
+        let root_names: Vec<String> = match self.runner.config_paths() {
+            Ok(entries) => entries
+                .into_iter()
+                .filter(|entry| !entry.path.contains('/'))
+                .map(|entry| entry.path)
+                .collect(),
+            Err(problem) => return vec![problem],
+        };
+        tree::findings(&listing, &root_names, PROJECT_CONFIGS, &|path| {
+            self.runner.read_file(path)
+        })
+    }
+
     /// Run every row in order, stopping at the first that does not pass.
     ///
     /// # Errors
@@ -322,9 +443,10 @@ impl<'a> Gate<'a> {
         writeln!(out, "check")?;
         let mut rows = Vec::new();
 
-        // The pin rules run before any tool. A lockfile entry carrying a url
-        // and no checksum installs whatever that url serves, so a rule that ran
-        // later would report a finding about a binary that already executed.
+        // The pin and tree rules run before any tool. A lockfile entry carrying
+        // a url and no checksum installs whatever that url serves, and Bun runs
+        // a preload bunfig.toml names before any script, so a rule that ran
+        // later would report a finding about code that already executed.
         let problems = self.pin_problems();
         if problems.is_empty() {
             rows.push(Row {
@@ -340,6 +462,7 @@ impl<'a> Gate<'a> {
             // remedy only when a problem is about a lockfile; an unreadable or
             // malformed pin file needs an edit, not a relock.
             let strays = self.stray_problems();
+            let tree = self.tree_problems();
             let relocks: Vec<&str> = pins::PAIRS
                 .iter()
                 .filter(|pair| problems.iter().any(|problem| problem.contains(pair.lock)))
@@ -347,6 +470,8 @@ impl<'a> Gate<'a> {
                 .collect();
             let remedy = if !strays.is_empty() {
                 "remove each file and link named above".to_string()
+            } else if !tree.is_empty() {
+                "resolve each finding above, which names what to change".to_string()
             } else if relocks.is_empty() {
                 format!("fix {}", pins::PINS)
             } else {
@@ -360,9 +485,40 @@ impl<'a> Gate<'a> {
             return Ok(rows);
         }
 
+        let tracked = match self.runner.listing() {
+            Ok(listing) => listing.tracked,
+            Err(problem) => {
+                writeln!(out, "  {problem}")?;
+                Vec::new()
+            }
+        };
         for step in self.steps {
+            // The build and test rows run repository code, and a later row reads
+            // a config that code could write, so the tree rules run again before
+            // each row rather than once.
+            let changed = self.tree_problems();
+            if !changed.is_empty() {
+                for problem in changed {
+                    writeln!(out, "  {}", tree::printable(problem))?;
+                }
+                rows.push(Row {
+                    step: step.name,
+                    outcome: Outcome::Unrun(
+                        "the tree changed while the gate ran: resolve each finding above"
+                            .to_string(),
+                    ),
+                });
+                break;
+            }
             let outcome = match self.prepare(step) {
-                Ok(prepared) => self.invoke(out, &prepared)?,
+                Ok(prepared) if step.proof == Proof::Exit => self.invoke(out, &prepared)?,
+                Ok(prepared) => match self.prove(out, step, &prepared, &tracked)? {
+                    Ok(note) => Outcome::Passed(note),
+                    Err(sentence) => {
+                        writeln!(out, "  {}", tree::printable(sentence))?;
+                        Outcome::Failed
+                    }
+                },
                 Err(problem) => Outcome::Unrun(problem),
             };
             let stop = !matches!(outcome, Outcome::Passed(_));
@@ -389,6 +545,15 @@ impl<'a> Gate<'a> {
                 .to_string(),
             Program::Path(name) => name.to_string(),
         };
+        if let Some(entry) = step
+            .args
+            .first()
+            .and_then(|arg| arg.strip_prefix("./"))
+            .filter(|entry| entry.starts_with("node_modules/"))
+            && !self.runner.exists(entry)
+        {
+            return Err(format!("{entry} is not in the checkout: {}", step.install));
+        }
         let mut command = vec![program];
         command.extend(step.args.iter().map(|arg| (*arg).to_string()));
         let mut env: Vec<(String, String)> = step
@@ -398,22 +563,42 @@ impl<'a> Gate<'a> {
             .collect();
         let mut note = String::new();
         match step.name {
+            "clippy" => {
+                // clippy reads clippy.toml from the directory this names and
+                // nowhere else, so no crate's or parent's copy reaches it.
+                env.push((
+                    "CLIPPY_CONF_DIR".to_string(),
+                    self.runner.root().display().to_string(),
+                ));
+            }
             "actionlint" => {
                 // actionlint exits zero and prints nothing when its analyzer is
-                // absent or will not execute, and no flag changes that. The path
-                // mise resolved goes on the command line, and a workflow with one
-                // known finding has to come back with that finding before the
-                // real run is trusted.
+                // absent or will not execute, and no flag changes that. The
+                // analyzer is this binary's ShellCheck stand-in over the
+                // ShellCheck mise resolved. Two canaries prove both before the
+                // real run is trusted: a finding ShellCheck must report, and a
+                // directive the stand-in must refuse.
                 let analyzer = self.runner.resolve("shellcheck").map_err(|reason| {
                     format!(
                         "{reason}, and actionlint would skip the analysis in silence: {MISE_INSTALL}"
                     )
                 })?;
-                command.push(format!("-shellcheck={}", analyzer.display()));
-                let heard = self.canary(&command)?;
-                if !canary_passed(&heard) {
+                let stand_in = std::env::current_exe().map_err(|err| {
+                    format!("the running xtask cannot be found to stand in for ShellCheck: {err}")
+                })?;
+                command.push(format!(
+                    "-shellcheck={}",
+                    shellcheck::flag_value(&stand_in, &analyzer)?
+                ));
+                if !canary_passed(&self.canary(&command, CANARY)?) {
                     return Err(
                         "actionlint ran without ShellCheck: the canary workflow came back with no SC2086"
+                            .to_string(),
+                    );
+                }
+                if !directive_refused(&self.canary(&command, DIRECTIVE_CANARY)?) {
+                    return Err(
+                        "actionlint ran without the ShellCheck stand-in: the canary carrying a directive came back unrefused"
                             .to_string(),
                     );
                 }
@@ -441,14 +626,14 @@ impl<'a> Gate<'a> {
         Ok(Prepared { command, env, note })
     }
 
-    /// Run the actionlint command over the canary workflow and return what it
-    /// printed. An exit code alone says nothing, because a finding is the
-    /// expected result.
-    fn canary(&self, command: &[String]) -> Result<String, String> {
+    /// Run the actionlint command over a canary workflow holding `text` and
+    /// return what it printed. An exit code alone says nothing, because a
+    /// finding is the expected result.
+    fn canary(&self, command: &[String], text: &str) -> Result<String, String> {
         let dir =
             tempfile::tempdir().map_err(|err| format!("creating the canary directory: {err}"))?;
         let workflow = dir.path().join("canary.yml");
-        std::fs::write(&workflow, CANARY)
+        std::fs::write(&workflow, text)
             .map_err(|err| format!("writing the canary workflow: {err}"))?;
         let path = workflow.display().to_string();
         let mut argv: Vec<&str> = command.iter().map(String::as_str).collect();
@@ -468,9 +653,9 @@ impl<'a> Gate<'a> {
         (!token.is_empty()).then_some(token)
     }
 
-    /// Run one prepared command and judge it.
+    /// Run one prepared command and judge it by its exit code.
     fn invoke(&self, out: &mut dyn Write, prepared: &Prepared) -> io::Result<Outcome> {
-        let line = prepared.command.join(" ");
+        let line = tree::printable(prepared.command.join(" "));
         writeln!(
             out,
             "\n{}",
@@ -487,6 +672,361 @@ impl<'a> Gate<'a> {
             Ok(Exit::Err) => Outcome::Failed,
             Err(err) => Outcome::Unrun(format!("{} could not start: {err}", prepared.command[0])),
         })
+    }
+
+    /// Run `command` and return what it printed, printing the command line and,
+    /// when it exits non-zero, everything it printed.
+    fn capture(
+        &self,
+        out: &mut dyn Write,
+        command: &[String],
+        env: &[(String, String)],
+        input: Option<&str>,
+    ) -> io::Result<Result<Captured, String>> {
+        let line = tree::printable(command.join(" "));
+        writeln!(
+            out,
+            "\n{}",
+            line.if_supports_color(Stream::Stdout, OwoColorize::dimmed)
+        )?;
+        let argv: Vec<&str> = command.iter().map(String::as_str).collect();
+        let pairs: Vec<(&str, &str)> = env
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        Ok(match self.runner.output(&argv, &pairs, input) {
+            Ok(captured) => {
+                if captured.exit == Exit::Err {
+                    for line in captured.stdout.lines().chain(captured.stderr.lines()) {
+                        if !noise(line) {
+                            writeln!(out, "{}", tree::printable(line.to_string()))?;
+                        }
+                    }
+                }
+                Ok(captured)
+            }
+            Err(err) => Err(format!("{} could not start: {err}", command[0])),
+        })
+    }
+
+    /// Run a row that proves what it read, returning its note or the sentence
+    /// saying why it failed.
+    fn prove(
+        &self,
+        out: &mut dyn Write,
+        step: &Step,
+        prepared: &Prepared,
+        tracked: &[String],
+    ) -> io::Result<Result<String, String>> {
+        let root = self.runner.root();
+        let existing: Vec<String> = tracked
+            .iter()
+            .filter(|path| self.runner.exists(path))
+            .cloned()
+            .collect();
+        match step.proof {
+            Proof::Exit => Ok(Ok(prepared.note.clone())),
+            Proof::Rustfmt => self.prove_rustfmt(out, prepared, &existing, &root),
+            Proof::Taplo => self.prove_batches(out, prepared, &existing, &root, &Batched::TAPLO),
+            Proof::Machete => self.prove_machete(out, prepared, &existing, &root),
+            Proof::Prettier => self.prove_prettier(out, prepared, &existing),
+            Proof::Actionlint => self.prove_actionlint(out, prepared, &existing, &root),
+            Proof::Zizmor => self.prove_zizmor(out, prepared, &existing, &root),
+        }
+    }
+
+    /// The fmt row: every tracked Rust file must be one rustfmt formatted.
+    fn prove_rustfmt(
+        &self,
+        out: &mut dyn Write,
+        prepared: &Prepared,
+        tracked: &[String],
+        root: &Path,
+    ) -> io::Result<Result<String, String>> {
+        let captured = match self.capture(out, &prepared.command, &prepared.env, None)? {
+            Ok(captured) => captured,
+            Err(sentence) => return Ok(Err(sentence)),
+        };
+        if captured.exit == Exit::Err {
+            return Ok(Err(
+                "rustfmt exited non-zero, and its output is above".to_string()
+            ));
+        }
+        let handed: Vec<String> = tracked
+            .iter()
+            .filter(|path| tree::has_extension(&tree::fold(path), "rs"))
+            .cloned()
+            .collect();
+        let formatted =
+            proof::rustfmt_formatted(&format!("{}\n{}", captured.stdout, captured.stderr));
+        // rustfmt finds its files through each crate's module tree, an untracked
+        // module included, so the row holds every tracked file to be among them.
+        Ok(
+            proof::covered("rustfmt", proof::FILES, &handed, &formatted, root)
+                .map(|()| proof::count(handed.len(), "file", "files")),
+        )
+    }
+
+    /// A row that hands its tool the tracked files it reads in batches, after
+    /// `--`, and proves each one reported.
+    fn prove_batches(
+        &self,
+        out: &mut dyn Write,
+        prepared: &Prepared,
+        tracked: &[String],
+        root: &Path,
+        batched: &Batched,
+    ) -> io::Result<Result<String, String>> {
+        let handed: Vec<String> = tracked
+            .iter()
+            .filter(|path| (batched.reads)(&tree::fold(path)))
+            .cloned()
+            .collect();
+        if handed.is_empty() {
+            return Ok(Err(format!(
+                "no tracked file is one {} reads, so the row checks nothing",
+                batched.tool
+            )));
+        }
+        for batch in proof::batches(&handed) {
+            let mut command = prepared.command.clone();
+            command.push("--".to_string());
+            command.extend(batch.iter().cloned());
+            let captured = match self.capture(out, &command, &prepared.env, None)? {
+                Ok(captured) => captured,
+                Err(sentence) => return Ok(Err(sentence)),
+            };
+            if captured.exit == Exit::Err {
+                return Ok(Err(format!(
+                    "{} exited non-zero, and its output is above",
+                    batched.tool
+                )));
+            }
+            let printed = format!("{}\n{}", captured.stdout, captured.stderr);
+            let Some(reported) = (batched.reported)(&printed) else {
+                return Ok(Err(format!(
+                    "{} printed no line naming what it checked, so what it read is unknown",
+                    batched.tool
+                )));
+            };
+            if let Err(sentence) = proof::prove(batched.tool, proof::FILES, &batch, &reported, root)
+            {
+                return Ok(Err(sentence));
+            }
+        }
+        Ok(Ok(proof::count(handed.len(), "file", "files")))
+    }
+
+    /// The actionlint row: every shell a tracked workflow's steps run under is
+    /// one actionlint hands to `ShellCheck`, or pwsh, and then every tracked
+    /// workflow is linted and proven.
+    fn prove_actionlint(
+        &self,
+        out: &mut dyn Write,
+        prepared: &Prepared,
+        tracked: &[String],
+        root: &Path,
+    ) -> io::Result<Result<String, String>> {
+        let workflows: Vec<String> = tracked
+            .iter()
+            .filter(|path| (Batched::ACTIONLINT.reads)(&tree::fold(path)))
+            .cloned()
+            .collect();
+        if !workflows.is_empty() {
+            let ask = vec![
+                "bun".to_string(),
+                "-e".to_string(),
+                shellcheck::WORKFLOW_SHELLS.to_string(),
+            ];
+            let captured = match self.capture(out, &ask, &[], Some(&workflows.join("\0")))? {
+                Ok(captured) => captured,
+                Err(sentence) => return Ok(Err(format!("{sentence}: {BUN_INSTALL}"))),
+            };
+            if captured.exit == Exit::Err {
+                return Ok(Err(format!(
+                    "bun could not read the shells the workflows run: {BUN_INSTALL}"
+                )));
+            }
+            let (read, refused) = match shellcheck::shell_findings(&captured.stdout) {
+                Ok(found) => found,
+                Err(sentence) => return Ok(Err(sentence)),
+            };
+            if let Err(sentence) = proof::prove("bun", proof::FILES, &workflows, &read, root) {
+                return Ok(Err(sentence));
+            }
+            if !refused.is_empty() {
+                return Ok(Err(refused.join("; ")));
+            }
+        }
+        self.prove_batches(out, prepared, tracked, root, &Batched::ACTIONLINT)
+    }
+
+    /// The machete row: every tracked crate's directory is handed over, and
+    /// each must be one cargo-machete names as analyzed.
+    fn prove_machete(
+        &self,
+        out: &mut dyn Write,
+        prepared: &Prepared,
+        tracked: &[String],
+        root: &Path,
+    ) -> io::Result<Result<String, String>> {
+        let handed: Vec<String> = tracked
+            .iter()
+            .filter_map(|path| {
+                let (dir, name) = path.rsplit_once('/')?;
+                (tree::fold(name) == "cargo.toml").then(|| dir.to_string())
+            })
+            .collect();
+        if handed.is_empty() {
+            return Ok(Err(
+                "no tracked crate sits below the root, so the machete row checks nothing"
+                    .to_string(),
+            ));
+        }
+        let mut command = prepared.command.clone();
+        command.extend(handed.iter().cloned());
+        let captured = match self.capture(out, &command, &prepared.env, None)? {
+            Ok(captured) => captured,
+            Err(sentence) => return Ok(Err(sentence)),
+        };
+        if captured.exit == Exit::Err {
+            return Ok(Err(
+                "cargo-machete exited non-zero, and its output is above".to_string(),
+            ));
+        }
+        // cargo-machete exits zero and names a directory as clean when it cannot
+        // read the crate there, and says so on one line of its own.
+        let printed = format!("{}\n{}", captured.stdout, captured.stderr);
+        if let Some(line) = printed
+            .lines()
+            .find(|line| line.contains("error when handling"))
+        {
+            return Ok(Err(format!(
+                "cargo-machete could not read a crate it was handed: {}",
+                line.trim()
+            )));
+        }
+        let analyzed =
+            proof::machete_analyzed(&format!("{}\n{}", captured.stdout, captured.stderr));
+        Ok(
+            proof::prove("cargo-machete", proof::CRATES, &handed, &analyzed, root)
+                .map(|()| proof::count(handed.len(), "crate", "crates")),
+        )
+    }
+
+    /// The prettier row: Prettier's `getFileInfo` picks the tracked files it
+    /// formats, and the row hands it exactly those, in batches.
+    fn prove_prettier(
+        &self,
+        out: &mut dyn Write,
+        prepared: &Prepared,
+        tracked: &[String],
+    ) -> io::Result<Result<String, String>> {
+        let ask = vec![
+            "bun".to_string(),
+            "-e".to_string(),
+            proof::PRETTIER_FILES.to_string(),
+        ];
+        let listed = tracked.join("\0");
+        let captured = match self.capture(out, &ask, &[], Some(&listed))? {
+            Ok(captured) => captured,
+            Err(sentence) => return Ok(Err(format!("{sentence}: {BUN_INSTALL}"))),
+        };
+        if captured.exit == Exit::Err {
+            return Ok(Err(format!(
+                "bun could not ask Prettier which files it formats: {BUN_INSTALL}"
+            )));
+        }
+        let checked: Vec<String> = captured
+            .stdout
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+        if checked.is_empty() {
+            return Ok(Err(
+                "no tracked file is one Prettier formats, so the row checks nothing".to_string(),
+            ));
+        }
+        for batch in proof::batches(&checked) {
+            let mut command = prepared.command.clone();
+            command.push("--".to_string());
+            command.extend(batch);
+            let captured = match self.capture(out, &command, &prepared.env, None)? {
+                Ok(captured) => captured,
+                Err(sentence) => return Ok(Err(sentence)),
+            };
+            if captured.exit == Exit::Err {
+                return Ok(Err(
+                    "Prettier exited non-zero, and its output is above".to_string()
+                ));
+            }
+        }
+        Ok(Ok(proof::count(checked.len(), "file", "files")))
+    }
+
+    /// The zizmor row: every tracked workflow must be an input zizmor completed,
+    /// and a second pass with nothing waived holds every job passing
+    /// `secrets: inherit` to the shared workflows.
+    fn prove_zizmor(
+        &self,
+        out: &mut dyn Write,
+        prepared: &Prepared,
+        tracked: &[String],
+        root: &Path,
+    ) -> io::Result<Result<String, String>> {
+        let captured = match self.capture(out, &prepared.command, &prepared.env, None)? {
+            Ok(captured) => captured,
+            Err(sentence) => return Ok(Err(sentence)),
+        };
+        if captured.exit == Exit::Err {
+            return Ok(Err("zizmor reported findings".to_string()));
+        }
+        let workflows: Vec<String> = tracked
+            .iter()
+            .filter(|path| workflow(&tree::fold(path)))
+            .cloned()
+            .collect();
+        let completed: Vec<String> =
+            proof::zizmor_completed(&format!("{}\n{}", captured.stdout, captured.stderr))
+                .into_iter()
+                .filter(|path| workflow(&proof::comparable(path, root)))
+                .collect();
+        if let Err(sentence) = proof::prove("zizmor", proof::FILES, &workflows, &completed, root) {
+            return Ok(Err(sentence));
+        }
+        // No config and no ignores, so neither the file-level waiver in
+        // zizmor.yml nor an inline comment hides a job from this pass. Its exit
+        // code reports the audits it ran, and the row reads its JSON alone.
+        let held = vec![
+            prepared.command[0].clone(),
+            "--offline".to_string(),
+            "--no-config".to_string(),
+            "--no-ignores".to_string(),
+            "--strict-collection".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+            "--collect=all".to_string(),
+            ".github".to_string(),
+        ];
+        writeln!(
+            out,
+            "\n{}",
+            held.join(" ")
+                .if_supports_color(Stream::Stdout, OwoColorize::dimmed)
+        )?;
+        let argv: Vec<&str> = held.iter().map(String::as_str).collect();
+        let report = match self.runner.output(&argv, &[], None) {
+            Ok(captured) => captured.stdout,
+            Err(err) => return Ok(Err(format!("{} could not start: {err}", held[0]))),
+        };
+        match proof::inherit_callees(&report) {
+            Ok(callees) if callees.is_empty() => {}
+            Ok(callees) => return Ok(Err(callees.join("; "))),
+            Err(sentence) => return Ok(Err(sentence)),
+        }
+        let count = proof::count(workflows.len(), "workflow", "workflows");
+        Ok(Ok(format!("{count}, {}", prepared.note)))
     }
 
     /// Print the summary table.
@@ -531,6 +1071,51 @@ impl<'a> Gate<'a> {
     }
 }
 
+/// A row that hands its tool files in batches: the tool, which tracked files it
+/// reads, and how its output names the ones it finished.
+struct Batched {
+    tool: &'static str,
+    reads: fn(&str) -> bool,
+    reported: fn(&str) -> Option<Vec<String>>,
+}
+
+impl Batched {
+    /// taplo reads every tracked TOML file and names what it found.
+    const TAPLO: Self = Self {
+        tool: "taplo",
+        reads: |folded| tree::has_extension(folded, "toml"),
+        reported: proof::taplo_found,
+    };
+
+    /// actionlint reads every tracked workflow and names each it linted.
+    const ACTIONLINT: Self = Self {
+        tool: "actionlint",
+        reads: workflow,
+        reported: |printed| Some(proof::actionlint_linted(printed)),
+    };
+}
+
+/// Whether the folded path `folded` is a workflow GitHub reads.
+fn workflow(folded: &str) -> bool {
+    folded
+        .strip_prefix(".github/workflows/")
+        .is_some_and(|name| {
+            !name.contains('/')
+                && (tree::has_extension(name, "yml") || tree::has_extension(name, "yaml"))
+        })
+}
+
+/// Whether `line`, from a proving row's tool, is progress the row reads rather
+/// than a finding a person reads.
+fn noise(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("verbose: ")
+        || trimmed.starts_with("Formatting ")
+        || trimmed.starts_with("Spent ")
+        || trimmed.starts_with("Using rustfmt config file")
+        || line.contains(" INFO ")
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -538,29 +1123,78 @@ mod tests {
     use std::io;
     use std::path::PathBuf;
 
-    use super::{Gate, MISE_INSTALL, Outcome, Program, Row, STEPS, canary_passed};
-    use crate::pins;
-    use crate::runner::{Exit, Runner};
+    use super::{
+        Gate, MISE_INSTALL, Outcome, PRETTIER, Program, Row, STEPS, canary_passed,
+        directive_refused,
+    };
+    use crate::runner::{Captured, Exit, Runner};
+    use crate::{pins, proof, shellcheck, tree};
+
+    /// The root the fake answers with, which every path a fake tool prints
+    /// starts with.
+    const ROOT: &str = "/fake/root";
+
+    /// The tracked files the fake lists: one of each kind a walking row reads.
+    const TRACKED: &[&str] = &[
+        "Cargo.toml",
+        "crates/a/Cargo.toml",
+        "crates/a/src/lib.rs",
+        "xtask/Cargo.toml",
+        "xtask/src/main.rs",
+        ".github/workflows/ci.yml",
+        ".github/workflows/deps.yml",
+        ".github/dependabot.yml",
+        "README.md",
+        "docs/dev.md",
+        "LICENSE",
+    ];
 
     /// A runner that spawns nothing: every mise tool resolves under one fake
-    /// prefix, every command passes, and the canary answers with its finding.
+    /// prefix, every tool reports what it was handed, and the canary answers
+    /// with its finding.
+    #[expect(
+        clippy::struct_excessive_bools,
+        reason = "each bool is one independent answer the fake gives"
+    )]
     struct FakeRunner {
         /// Tools `resolve` answers `None` for.
         unresolvable: Vec<&'static str>,
         /// Programs whose command exits non-zero, by basename.
         failing: Vec<&'static str>,
+        /// Paths a fake tool leaves out of its report, by the tool's basename.
+        unreported: Vec<(&'static str, &'static str)>,
+        /// The tracked files the listing answers with.
+        tracked: Vec<&'static str>,
+        /// The untracked files the listing answers with.
+        untracked: Vec<&'static str>,
+        /// The workflow the held zizmor pass names as a secrets-inherit callee.
+        callee: &'static str,
         /// Whether `gh auth token` answers.
         logged_in: bool,
         /// Whether `CI` reads as set.
         in_ci: bool,
         /// The paths the tree listing answers with beside the two pairs.
         extra_paths: Vec<&'static str>,
-        /// The environment names each `run` call set, in order.
-        envs: RefCell<Vec<Vec<String>>>,
         /// Whether the pin files can be read.
         pins_readable: bool,
-        /// Every command passed to `run`, in order.
+        /// Whether the directive canary comes back analyzed rather than refused.
+        unrefused: bool,
+        /// The shell every workflow step reports.
+        shell: &'static str,
+        /// Paths under `node_modules` that `exists` answers false for.
+        uninstalled: Vec<&'static str>,
+        /// Crate directories cargo-machete cannot read, which it names on a line
+        /// of its own and still reports as clean.
+        unreadable: Vec<&'static str>,
+        /// Untracked paths the listing gains once a program has run, by that
+        /// program's basename.
+        plants: Vec<(&'static str, &'static str)>,
+        /// Where the shell report says each workflow's one shell is set.
+        step_at: &'static str,
+        /// Every command passed to `run` or `output`, in order.
         ran: RefCell<Vec<Vec<String>>>,
+        /// The environment each of those commands set, in the same order.
+        envs: RefCell<Vec<Vec<(String, String)>>>,
     }
 
     impl FakeRunner {
@@ -568,12 +1202,22 @@ mod tests {
             Self {
                 unresolvable: Vec::new(),
                 failing: Vec::new(),
+                unreported: Vec::new(),
+                tracked: TRACKED.to_vec(),
+                untracked: Vec::new(),
+                callee: "zachthedev/.github/.github/workflows/deps.yml@c53d09e393028ceddee0d761f2a7963394289a72",
                 logged_in: true,
                 in_ci: false,
                 extra_paths: Vec::new(),
-                envs: RefCell::new(Vec::new()),
                 pins_readable: true,
+                unrefused: false,
+                shell: "bash",
+                uninstalled: Vec::new(),
+                unreadable: Vec::new(),
+                plants: Vec::new(),
+                step_at: "jobs.a.steps[0].shell",
                 ran: RefCell::new(Vec::new()),
+                envs: RefCell::new(Vec::new()),
             }
         }
 
@@ -597,6 +1241,26 @@ mod tests {
             self
         }
 
+        fn unreported(mut self, tool: &'static str, path: &'static str) -> Self {
+            self.unreported.push((tool, path));
+            self
+        }
+
+        fn tracking(mut self, tracked: &[&'static str]) -> Self {
+            self.tracked = tracked.to_vec();
+            self
+        }
+
+        fn untracked(mut self, path: &'static str) -> Self {
+            self.untracked.push(path);
+            self
+        }
+
+        fn calling(mut self, callee: &'static str) -> Self {
+            self.callee = callee;
+            self
+        }
+
         fn logged_out(mut self) -> Self {
             self.logged_in = false;
             self
@@ -607,9 +1271,209 @@ mod tests {
             self
         }
 
+        fn unrefused(mut self) -> Self {
+            self.unrefused = true;
+            self
+        }
+
+        fn shell(mut self, shell: &'static str) -> Self {
+            self.shell = shell;
+            self
+        }
+
+        fn uninstalled(mut self, path: &'static str) -> Self {
+            self.uninstalled.push(path);
+            self
+        }
+
+        fn unreadable(mut self, dir: &'static str) -> Self {
+            self.unreadable.push(dir);
+            self
+        }
+
+        fn planting(mut self, program: &'static str, path: &'static str) -> Self {
+            self.plants.push((program, path));
+            self
+        }
+
+        fn step_at(mut self, at: &'static str) -> Self {
+            self.step_at = at;
+            self
+        }
+
+        /// The first command that runs the JavaScript entry `entry` under Bun.
+        fn running(&self, entry: &str) -> Option<Vec<String>> {
+            self.ran()
+                .into_iter()
+                .find(|command| command.get(1).map(String::as_str) == Some(entry))
+        }
+
         fn ran(&self) -> Vec<Vec<String>> {
             self.ran.borrow().clone()
         }
+
+        /// The first command whose program's basename is `program`.
+        fn command(&self, program: &str) -> Option<Vec<String>> {
+            self.ran()
+                .into_iter()
+                .find(|command| basename(&command[0]) == program)
+        }
+
+        fn record(&self, command: &[&str], env: &[(&str, &str)]) {
+            self.ran
+                .borrow_mut()
+                .push(command.iter().map(|arg| (*arg).to_string()).collect());
+            self.envs.borrow_mut().push(
+                env.iter()
+                    .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                    .collect(),
+            );
+        }
+
+        /// `paths` less the ones `tool` leaves out.
+        fn reported<'a>(&self, tool: &str, paths: &'a [&'a str]) -> Vec<&'a str> {
+            paths
+                .iter()
+                .copied()
+                .filter(|path| !self.unreported.contains(&(tool, *path)))
+                .collect()
+        }
+    }
+
+    impl FakeRunner {
+        /// What `program` prints to standard output and standard error for
+        /// `command`: each tool's report of what it read, less what the case
+        /// has it leave out.
+        fn answer(&self, program: &str, command: &[&str], input: Option<&str>) -> (String, String) {
+            let handed: Vec<&str> = command
+                .iter()
+                .position(|arg| *arg == "--")
+                .map(|at| command[at + 1..].to_vec())
+                .unwrap_or_default();
+            match program {
+                "cargo" => {
+                    let rust: Vec<&str> = self
+                        .tracked
+                        .iter()
+                        .copied()
+                        .filter(|path| tree::has_extension(path, "rs"))
+                        .collect();
+                    let formatted = self.reported(program, &rust);
+                    (
+                        lines(&formatted, |path| format!("Formatting {ROOT}/{path}")),
+                        String::new(),
+                    )
+                }
+                "taplo" => {
+                    let files: Vec<String> = self
+                        .reported(program, &handed)
+                        .iter()
+                        .map(|path| format!("\"{ROOT}/{path}\""))
+                        .collect();
+                    let line = format!(
+                        " INFO taplo: found files total={} excluded=0 files=[{}] cwd=\"{ROOT}\"\n",
+                        files.len(),
+                        files.join(", ")
+                    );
+                    (String::new(), line)
+                }
+                "cargo-machete" => {
+                    let dirs: Vec<&str> = command[1..]
+                        .iter()
+                        .copied()
+                        .filter(|arg| !arg.starts_with("--"))
+                        .collect();
+                    let analyzed = self.reported(program, &dirs);
+                    let shape = |dir: &str| {
+                        format!(
+                            "cargo-machete didn't find any unused dependencies in {dir}. Good job!"
+                        )
+                    };
+                    let failed = |dir: &str| {
+                        format!("error when handling {dir}: the manifest does not parse")
+                    };
+                    (lines(&analyzed, shape), lines(&self.unreadable, failed))
+                }
+                "bun" if command.get(2) == Some(&shellcheck::WORKFLOW_SHELLS) => {
+                    (self.shells(input), String::new())
+                }
+                "bun" if command.get(2) == Some(&proof::PRETTIER_FILES) => {
+                    let kept: Vec<&str> = input
+                        .unwrap_or("")
+                        .split('\0')
+                        .filter(|path| {
+                            ["md", "yml", "json"]
+                                .iter()
+                                .any(|extension| tree::has_extension(path, extension))
+                        })
+                        .collect();
+                    (kept.join("\0"), String::new())
+                }
+                "actionlint" => {
+                    let linted = self.reported(program, &handed);
+                    let shape =
+                        |path: &str| format!("verbose: Found total 0 errors in 1 ms for {path}");
+                    (String::new(), lines(&linted, shape))
+                }
+                "zizmor" if command.contains(&"--no-config") => (
+                    format!(
+                        r#"[{{"ident":"secrets-inherit","locations":[{{"symbolic":{{"kind":"Primary","key":{{"Local":{{"verbatim_path":".github/workflows/deps.yml"}}}}}},"concrete":{{"feature":"{}"}}}}]}}]"#,
+                        self.callee
+                    ),
+                    String::new(),
+                ),
+                "zizmor" => {
+                    let inputs: Vec<&str> = self
+                        .tracked
+                        .iter()
+                        .copied()
+                        .filter(|path| path.starts_with(".github/"))
+                        .collect();
+                    let completed = self.reported(program, &inputs);
+                    let shape = |path: &str| format!(" INFO audit: zizmor: completed {path}");
+                    (String::new(), lines(&completed, shape))
+                }
+                _ => (String::new(), String::new()),
+            }
+        }
+    }
+
+    impl FakeRunner {
+        /// The workflow shell report for the NUL-separated paths in `input`:
+        /// one step per workflow, under the fake's shell, less what the case
+        /// has the reader leave out.
+        fn shells(&self, input: Option<&str>) -> String {
+            let paths: Vec<&str> = input
+                .unwrap_or("")
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .collect();
+            let entries: Vec<serde_json::Value> = self
+                .reported("bun", &paths)
+                .iter()
+                .map(|path| {
+                    serde_json::json!({
+                        "path": path,
+                        "shells": [{ "at": self.step_at, "shell": self.shell }],
+                    })
+                })
+                .collect();
+            serde_json::Value::Array(entries).to_string()
+        }
+    }
+
+    /// One line per path, each shaped by `shape`.
+    fn lines(paths: &[&str], shape: impl Fn(&str) -> String) -> String {
+        paths.iter().fold(String::new(), |mut text, path| {
+            text.push_str(&shape(path));
+            text.push('\n');
+            text
+        })
+    }
+
+    /// The file name a command runs, without its directory.
+    fn basename(program: &str) -> &str {
+        program.rsplit(['/', '\\']).next().unwrap_or(program)
     }
 
     /// The pin file and lockfile for `pair` the fake reads, built from
@@ -651,7 +1515,7 @@ mod tests {
                 .collect();
             write!(
                 pinned,
-                "\n[tool_config]\nlocked = true\n\n[settings]\nlocked = true\nlockfile = true\nlocked_verify_provenance = true\nprovenance_api_failures_fatal = true\nlockfile_platforms = [{}]\nurl_replacements = {{ '{}' = \"{}\" }}\n",
+                "\n[tool_config]\nlocked = true\n\n[settings]\nlocked = true\nlockfile = true\nlocked_verify_provenance = true\nprovenance_api_failures_fatal = true\ngithub_attestations = true\nlockfile_platforms = [{}]\nurl_replacements = {{ '{}' = \"{}\" }}\n\n[settings.aqua]\ngithub_attestations = true\n",
                 platforms.join(", "),
                 pins::URL_API_PATTERN,
                 pins::URL_API_REFUSED
@@ -667,24 +1531,49 @@ mod tests {
         }
 
         fn capture_any(&self, command: &[&str]) -> Option<String> {
-            command[0].ends_with("actionlint").then(|| {
-                "canary.yml:6:9: shellcheck reported issue in this script: SC2086:info:1:6"
-                    .to_string()
-            })
+            if !basename(command[0]).starts_with("actionlint") {
+                return None;
+            }
+            let workflow = std::fs::read_to_string(command.last()?).ok()?;
+            Some(
+                if workflow.contains("# shellcheck disable") && !self.unrefused {
+                    format!(
+                        "canary.yml:7:11: shellcheck reported issue in this script: SC0:error:1:1: {}, because it drops findings from actionlint's report",
+                        shellcheck::REFUSAL
+                    )
+                } else {
+                    "canary.yml:6:9: shellcheck reported issue in this script: SC2086:info:1:6"
+                        .to_string()
+                },
+            )
         }
 
         fn run(&self, command: &[&str], env: &[(&str, &str)]) -> io::Result<Exit> {
-            self.ran
-                .borrow_mut()
-                .push(command.iter().map(|arg| (*arg).to_string()).collect());
-            self.envs
-                .borrow_mut()
-                .push(env.iter().map(|(name, _)| (*name).to_string()).collect());
-            let program = command[0].rsplit(['/', '\\']).next().unwrap_or(command[0]);
-            Ok(if self.failing.contains(&program) {
+            self.record(command, env);
+            Ok(if self.failing.contains(&basename(command[0])) {
                 Exit::Err
             } else {
                 Exit::Ok
+            })
+        }
+
+        fn output(
+            &self,
+            command: &[&str],
+            env: &[(&str, &str)],
+            input: Option<&str>,
+        ) -> io::Result<Captured> {
+            self.record(command, env);
+            let program = basename(command[0]);
+            let (stdout, stderr) = self.answer(program, command, input);
+            Ok(Captured {
+                exit: if self.failing.contains(&program) {
+                    Exit::Err
+                } else {
+                    Exit::Ok
+                },
+                stdout,
+                stderr,
             })
         }
 
@@ -692,7 +1581,7 @@ mod tests {
             if !self.pins_readable {
                 return None;
             }
-            pins::PAIRS.iter().find_map(|pair| {
+            let pinned = pins::PAIRS.iter().find_map(|pair| {
                 let (pinned, lock) = sound_pair(*pair);
                 if relative == pair.pins {
                     Some(pinned)
@@ -701,7 +1590,21 @@ mod tests {
                 } else {
                     None
                 }
-            })
+            });
+            pinned
+                .or_else(|| {
+                    tree::sound_files()
+                        .into_iter()
+                        .find(|(path, _)| path == relative)
+                        .map(|(_, text)| text)
+                })
+                .or_else(|| {
+                    // A crate manifest below the root inherits the workspace's
+                    // lints, as the tree rules hold every one to.
+                    (relative.ends_with("/Cargo.toml") && self.tracked.contains(&relative)).then(
+                        || "[package]\nname = \"a\"\n\n[lints]\nworkspace = true\n".to_string(),
+                    )
+                })
         }
 
         fn resolve(&self, tool: &str) -> Result<PathBuf, String> {
@@ -726,6 +1629,37 @@ mod tests {
                 })
                 .collect())
         }
+
+        fn listing(&self) -> Result<tree::Listing, String> {
+            let ran = self.ran();
+            let planted = self
+                .plants
+                .iter()
+                .filter(|(program, _)| ran.iter().any(|command| basename(&command[0]) == *program))
+                .map(|(_, path)| (*path).to_string());
+            Ok(tree::Listing {
+                tracked: self
+                    .tracked
+                    .iter()
+                    .map(|path| (*path).to_string())
+                    .collect(),
+                untracked: self
+                    .untracked
+                    .iter()
+                    .map(|path| (*path).to_string())
+                    .chain(planted)
+                    .collect(),
+            })
+        }
+
+        fn exists(&self, relative: &str) -> bool {
+            self.tracked.contains(&relative)
+                || (relative.starts_with("node_modules/") && !self.uninstalled.contains(&relative))
+        }
+
+        fn root(&self) -> PathBuf {
+            PathBuf::from(ROOT)
+        }
     }
 
     fn gate(runner: &FakeRunner) -> (Vec<Row>, String) {
@@ -736,8 +1670,16 @@ mod tests {
         (rows, String::from_utf8(out).expect("utf-8"))
     }
 
-    /// The order is the contract `--rows` prints and CONTRIBUTING.md names, so
-    /// a row added out of place or twice is caught here.
+    /// The row named `step` from a run.
+    fn row<'a>(rows: &'a [Row], step: &str) -> &'a Row {
+        rows.iter()
+            .find(|row| row.step == step)
+            .unwrap_or_else(|| panic!("{step} did not run: {rows:?}"))
+    }
+
+    /// The order is the contract `--rows` prints, so a row added out of place
+    /// or twice is caught here, and every walking row's note is the count of
+    /// what its tool reported checking.
     #[test]
     fn the_gate_runs_its_rows_in_the_documented_order() {
         let names: Vec<&str> = STEPS.iter().map(|step| step.name).collect();
@@ -758,11 +1700,25 @@ mod tests {
             ]
         );
         let runner = FakeRunner::all_installed();
-        let (rows, _) = gate(&runner);
+        let (rows, text) = gate(&runner);
         let ran: Vec<&str> = rows.iter().map(|row| row.step).collect();
         assert_eq!(ran[0], "pins");
         assert_eq!(&ran[1..], names.as_slice());
-        assert!(rows.iter().all(Row::passed), "{rows:?}");
+        assert!(rows.iter().all(Row::passed), "{rows:?}\n{text}");
+        for (step, note) in [
+            ("fmt", "2 files"),
+            ("taplo", "3 files"),
+            ("machete", "2 crates"),
+            ("prettier", "5 files"),
+            ("actionlint", "2 files"),
+            ("zizmor", "2 workflows, online"),
+        ] {
+            assert_eq!(
+                row(&rows, step).outcome,
+                Outcome::Passed(note.to_string()),
+                "{step}"
+            );
+        }
         for step in STEPS {
             assert!(
                 !step.covers.is_empty(),
@@ -797,14 +1753,233 @@ mod tests {
     fn every_mise_row_runs_the_path_mise_resolved() {
         let runner = FakeRunner::all_installed();
         gate(&runner);
-        for (step, command) in STEPS.iter().zip(runner.ran()) {
-            match step.program {
-                Program::Mise(tool) => {
-                    assert_eq!(command[0], format!("/fake/bin/{tool}"), "{}", step.name);
-                }
-                Program::Path(name) => assert_eq!(command[0], name, "{}", step.name),
+        for step in STEPS {
+            if let Program::Mise(tool) = step.program {
+                let command = runner
+                    .command(tool)
+                    .unwrap_or_else(|| panic!("{tool} never ran"));
+                assert_eq!(command[0], format!("/fake/bin/{tool}"), "{}", step.name);
             }
         }
+        for command in runner.ran() {
+            for tool in [
+                "taplo",
+                "cargo-nextest",
+                "cargo-deny",
+                "cargo-machete",
+                "actionlint",
+                "zizmor",
+            ] {
+                assert_ne!(command[0], tool, "{tool} ran by name");
+            }
+        }
+    }
+
+    /// Each tool runs with its one config named, so no nearer copy reaches it:
+    /// rustfmt with its config path, clippy under the root as its config
+    /// directory, cargo-deny with its config ahead of `check`, taplo and zizmor
+    /// with theirs, and Prettier with its config, its ignore file and no
+    /// editorconfig.
+    #[test]
+    fn every_tool_runs_with_its_one_config_named() {
+        let runner = FakeRunner::all_installed();
+        gate(&runner);
+        let joined = |program: &str| runner.command(program).expect(program).join(" ");
+        let starts = |program: &str, wanted: &str| {
+            let ran = joined(program);
+            assert!(
+                ran.starts_with(wanted),
+                "{program} ran as {ran:?}, and it must start {wanted:?}"
+            );
+        };
+        let carries = |program: &str, wanted: &str| {
+            let ran = joined(program);
+            assert!(
+                ran.contains(wanted),
+                "{program} ran as {ran:?}, and it must carry {wanted:?}"
+            );
+        };
+        starts(
+            "cargo",
+            "cargo fmt --check -- --config-path rustfmt.toml --verbose",
+        );
+        starts(
+            "cargo-deny",
+            "/fake/bin/cargo-deny --locked --config deny.toml check ",
+        );
+        carries("taplo", " --config .taplo.toml -- ");
+        carries("zizmor", " --config .github/zizmor.yml ");
+        let prettier = runner.running(PRETTIER).expect("prettier ran").join(" ");
+        let wanted = format!(
+            "bun {PRETTIER} --check --config .prettierrc --ignore-path .prettierignore --no-editorconfig -- "
+        );
+        assert!(
+            prettier.starts_with(&wanted),
+            "prettier ran as {prettier:?}, and it must start {wanted:?}"
+        );
+        let clippy = runner
+            .ran()
+            .iter()
+            .position(|command| command.get(1).map(String::as_str) == Some("clippy"))
+            .expect("clippy ran");
+        let env = runner.envs.borrow()[clippy].clone();
+        assert!(
+            env.contains(&("CLIPPY_CONF_DIR".to_string(), ROOT.to_string())),
+            "clippy ran with {env:?}, and it must set CLIPPY_CONF_DIR to {ROOT}"
+        );
+    }
+
+    /// cargo-machete is handed each tracked crate's directory, and never the
+    /// root, so the walk reaches nothing a crate's own directory does not hold.
+    #[test]
+    fn machete_is_handed_each_tracked_crate() {
+        let runner = FakeRunner::all_installed();
+        gate(&runner);
+        let machete = runner.command("cargo-machete").expect("machete ran");
+        assert_eq!(
+            machete[1..],
+            ["--no-ignore", "--skip-target-dir", "crates/a", "xtask"]
+        );
+    }
+
+    /// Prettier is handed exactly the tracked files its own file info keeps,
+    /// read by a script that asks with the ignore file and no config.
+    #[test]
+    fn prettier_is_handed_what_its_file_info_keeps() {
+        let runner = FakeRunner::all_installed();
+        gate(&runner);
+        let ask = runner.command("bun").expect("bun asked Prettier");
+        assert_eq!(ask[1], "-e");
+        assert!(ask[2].contains("resolveConfig: false"), "{}", ask[2]);
+        assert!(
+            ask[2].contains("ignorePath: '.prettierignore'"),
+            "{}",
+            ask[2]
+        );
+        assert!(
+            ask[2].contains("import('./node_modules/prettier/index.mjs')"),
+            "the file-info script imports Prettier from outside the checkout: {}",
+            ask[2]
+        );
+        let bunx = runner.running(PRETTIER).expect("prettier ran");
+        let handed = &bunx[bunx.iter().position(|arg| arg == "--").expect("--") + 1..];
+        assert_eq!(
+            handed,
+            [
+                ".github/workflows/ci.yml",
+                ".github/workflows/deps.yml",
+                ".github/dependabot.yml",
+                "README.md",
+                "docs/dev.md"
+            ]
+        );
+    }
+
+    /// A walking row fails, naming the file, when its tool never reports one
+    /// it was handed, and the gate stops there.
+    #[test]
+    fn a_walking_row_fails_when_its_tool_skips_a_file() {
+        for (tool, path, step, sentence) in [
+            (
+                "cargo",
+                "xtask/src/main.rs",
+                "fmt",
+                "rustfmt never reported 1 file of the 2 files it had to read: \"xtask/src/main.rs\"",
+            ),
+            (
+                "taplo",
+                "crates/a/Cargo.toml",
+                "taplo",
+                "taplo never reported 1 file of the 3 files it had to read: \"crates/a/Cargo.toml\"",
+            ),
+            (
+                "cargo-machete",
+                "xtask",
+                "machete",
+                "cargo-machete never reported 1 crate of the 2 crates it had to read: \"xtask\"",
+            ),
+            (
+                "actionlint",
+                ".github/workflows/deps.yml",
+                "actionlint",
+                "actionlint never reported 1 file of the 2 files it had to read: \".github/workflows/deps.yml\"",
+            ),
+        ] {
+            let runner = FakeRunner::all_installed().unreported(tool, path);
+            let (rows, text) = gate(&runner);
+            let last = rows.last().expect("one row");
+            assert_eq!(last.step, step, "{path}: {sentence}");
+            assert_eq!(last.outcome, Outcome::Failed, "{path}: {sentence}");
+            assert!(text.contains(sentence), "{path}: {text}");
+        }
+    }
+
+    /// zizmor must report every tracked workflow completed, dependabot.yml
+    /// aside, or the row fails naming the one it skipped.
+    #[test]
+    fn zizmor_fails_when_it_skips_a_workflow() {
+        let runner = FakeRunner::all_installed().unreported("zizmor", ".github/workflows/ci.yml");
+        let (rows, text) = gate(&runner);
+        let last = rows.last().expect("one row");
+        assert_eq!(last.step, "zizmor");
+        assert_eq!(last.outcome, Outcome::Failed);
+        assert!(
+            text.contains("zizmor never reported 1 file of the 2 files it had to read: \".github/workflows/ci.yml\""),
+            "{text}"
+        );
+    }
+
+    /// A walking row with nothing to read fails rather than passing over
+    /// nothing.
+    #[test]
+    fn a_walking_row_with_nothing_to_read_fails() {
+        let runner = FakeRunner::all_installed().tracking(&["crates/a/src/lib.rs", "README.md"]);
+        let (rows, text) = gate(&runner);
+        let last = rows.last().expect("one row");
+        assert_eq!(last.step, "taplo");
+        assert_eq!(last.outcome, Outcome::Failed);
+        assert!(
+            text.contains("no tracked file is one taplo reads, so the row checks nothing"),
+            "{text}"
+        );
+    }
+
+    /// The held zizmor pass runs with no config and no ignores, and a job
+    /// handing its secrets to a workflow outside the shared ones fails the row.
+    #[test]
+    fn a_secrets_inherit_callee_outside_the_shared_workflows_fails() {
+        let runner = FakeRunner::all_installed();
+        gate(&runner);
+        let held = runner
+            .ran()
+            .into_iter()
+            .find(|command| command.contains(&"--no-config".to_string()))
+            .expect("the held pass ran");
+        assert_eq!(
+            held[1..],
+            [
+                "--offline",
+                "--no-config",
+                "--no-ignores",
+                "--strict-collection",
+                "--format",
+                "json",
+                "--collect=all",
+                ".github"
+            ]
+        );
+        let runner =
+            FakeRunner::all_installed().calling("someone/else/.github/workflows/x.yml@main");
+        let (rows, text) = gate(&runner);
+        let last = rows.last().expect("one row");
+        assert_eq!(last.step, "zizmor");
+        assert_eq!(last.outcome, Outcome::Failed);
+        assert!(
+            text.contains(
+                "passes secrets: inherit to \"someone/else/.github/workflows/x.yml@main\""
+            ),
+            "{text}"
+        );
     }
 
     /// A tool mise resolves nowhere stops the gate at its row, names the install
@@ -819,11 +1994,9 @@ mod tests {
             matches!(&last.outcome, Outcome::Unrun(why) if why.contains(MISE_INSTALL)),
             "{last:?}"
         );
-        assert_eq!(
-            runner.ran().len(),
-            6,
-            "rows after deny ran: {:?}",
-            runner.ran()
+        assert!(
+            runner.command("cargo-machete").is_none(),
+            "a row after deny ran"
         );
         assert!(text.contains("the gate failed at deny"), "{text}");
     }
@@ -838,20 +2011,27 @@ mod tests {
         assert_eq!(last.outcome, Outcome::Failed);
     }
 
-    /// actionlint takes the analyzer by resolved path and refuses to run when
-    /// mise resolves none, because it would skip the analysis in silence.
+    /// actionlint takes this binary's stand-in over the `ShellCheck` mise
+    /// resolved, both paths single-quoted with forward slashes, and the row
+    /// refuses to run when mise resolves none, because actionlint would skip
+    /// the analysis in silence.
     #[test]
     fn actionlint_takes_shellcheck_by_resolved_path_or_refuses() {
         let runner = FakeRunner::all_installed();
         gate(&runner);
-        let actionlint = runner
-            .ran()
-            .into_iter()
-            .find(|command| command[0].ends_with("actionlint"))
-            .expect("actionlint ran");
+        let actionlint = runner.command("actionlint").expect("actionlint ran");
+        let stand_in = std::env::current_exe()
+            .expect("the test binary")
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        let flag = format!(
+            "-shellcheck='{stand_in}' {} '/fake/bin/shellcheck'",
+            shellcheck::SUBCOMMAND
+        );
         assert!(
-            actionlint.contains(&"-shellcheck=/fake/bin/shellcheck".to_string()),
-            "{actionlint:?}"
+            actionlint.contains(&flag),
+            "{actionlint:?} carries no {flag}"
         );
         assert!(
             actionlint.contains(&"-pyflakes=".to_string()),
@@ -879,6 +2059,116 @@ mod tests {
         assert!(!canary_passed(
             "canary.yml:6:9: shellcheck reported issue in this script: SC2046:warning"
         ));
+        assert!(directive_refused(&format!(
+            "canary.yml:7:11: shellcheck reported issue in this script: SC0:error:1:1: {}",
+            shellcheck::REFUSAL
+        )));
+        assert!(!directive_refused(
+            "canary.yml:6:9: shellcheck reported issue in this script: SC2086:info:1:6"
+        ));
+        assert!(!directive_refused(""));
+    }
+
+    /// cargo-machete names a directory as clean when it cannot read the crate
+    /// there, so the row fails on the line saying it could not.
+    #[test]
+    fn a_crate_machete_cannot_read_fails_the_row() {
+        let runner = FakeRunner::all_installed().unreadable("crates/a");
+        let (rows, text) = gate(&runner);
+        let sentence = "cargo-machete could not read a crate it was handed: error when handling crates/a: the manifest does not parse";
+        let last = rows.last().expect("one row");
+        assert_eq!(last.outcome, Outcome::Failed, "{sentence}");
+        assert_eq!(last.step, "machete", "{sentence}");
+        assert!(text.contains(sentence), "{sentence}: {text}");
+    }
+
+    /// A config a build or test row writes stops the gate at the next row, since
+    /// the tree rules run again before each one.
+    #[test]
+    fn a_config_written_mid_run_stops_the_next_row() {
+        let runner =
+            FakeRunner::all_installed().planting("cargo-nextest", ".github/actionlint.yaml");
+        let (rows, text) = gate(&runner);
+        let last = rows.last().expect("one row");
+        assert_eq!(
+            last.outcome,
+            Outcome::Unrun(
+                "the tree changed while the gate ran: resolve each finding above".to_string()
+            )
+        );
+        assert_eq!(last.step, "doctests");
+        assert!(text.contains("\".github/actionlint.yaml\""), "{text}");
+    }
+
+    /// A failure sentence carrying text a workflow wrote is printed with its
+    /// control characters escaped, so it cannot move or erase terminal lines.
+    #[test]
+    fn a_failure_sentence_prints_no_control_character() {
+        let runner = FakeRunner::all_installed()
+            .shell("python")
+            .step_at("jobs.a\u{1b}[2K.steps[0].shell");
+        let (rows, text) = gate(&runner);
+        assert_eq!(rows.last().expect("one row").outcome, Outcome::Failed);
+        assert!(!text.contains('\u{1b}'), "{text:?}");
+        assert!(text.contains("jobs.a\\u{1b}[2K.steps[0].shell"), "{text:?}");
+    }
+
+    /// A JavaScript tool runs by its path in the checkout, and its row refuses
+    /// to run when the package is not installed there.
+    #[test]
+    fn a_js_tool_missing_from_the_checkout_stops_its_row() {
+        let runner =
+            FakeRunner::all_installed().uninstalled("node_modules/prettier/bin/prettier.cjs");
+        let (rows, _) = gate(&runner);
+        let last = rows.last().expect("one row");
+        assert_eq!(
+            last.outcome,
+            Outcome::Unrun(
+                "node_modules/prettier/bin/prettier.cjs is not in the checkout: bun install"
+                    .to_string()
+            )
+        );
+        assert_eq!(last.step, "prettier");
+    }
+
+    /// The row refuses to run when the directive canary comes back analyzed,
+    /// because actionlint then runs `ShellCheck` without the stand-in.
+    #[test]
+    fn the_directive_canary_must_come_back_refused() {
+        let runner = FakeRunner::all_installed().unrefused();
+        let (rows, _) = gate(&runner);
+        let last = rows.last().expect("one row");
+        assert_eq!(
+            last.outcome,
+            Outcome::Unrun(
+                "actionlint ran without the ShellCheck stand-in: the canary carrying a directive came back unrefused"
+                    .to_string()
+            )
+        );
+        assert_eq!(last.step, "actionlint");
+    }
+
+    /// A step shell outside bash, sh and pwsh fails the actionlint row before
+    /// actionlint runs, and so does a workflow the shell read skipped.
+    #[test]
+    fn a_step_shell_outside_the_list_fails_the_actionlint_row() {
+        for (runner, sentence) in [
+            (
+                FakeRunner::all_installed().shell("python"),
+                "\".github/workflows/ci.yml\" runs jobs.a.steps[0].shell under the shell \"python\", and actionlint hands only a bash or sh script to ShellCheck. Use bash, sh, pwsh",
+            ),
+            (
+                FakeRunner::all_installed().unreported("bun", ".github/workflows/deps.yml"),
+                "bun never reported 1 file of the 2 files it had to read: \".github/workflows/deps.yml\"",
+            ),
+        ] {
+            let (rows, text) = gate(&runner);
+            let last = rows.last().expect("one row");
+            assert_eq!(last.step, "actionlint", "{sentence}");
+            assert_eq!(last.outcome, Outcome::Failed, "{sentence}");
+            assert!(text.contains(sentence), "{sentence}: {text}");
+            assert!(runner.command("actionlint").is_none(), "{sentence}");
+        }
     }
 
     /// zizmor runs online with a token and offline without one, and the row
@@ -887,23 +2177,21 @@ mod tests {
     fn zizmor_runs_online_with_a_login_and_offline_without() {
         let runner = FakeRunner::all_installed();
         let (rows, _) = gate(&runner);
-        let zizmor = rows
-            .iter()
-            .find(|row| row.step == "zizmor")
-            .expect("zizmor ran");
-        assert_eq!(zizmor.outcome, Outcome::Passed("online".to_string()));
-        let last = runner.ran().pop().expect("a command");
-        assert!(!last.contains(&"--offline".to_string()), "{last:?}");
+        assert_eq!(
+            row(&rows, "zizmor").outcome,
+            Outcome::Passed("2 workflows, online".to_string())
+        );
+        let audit = runner.command("zizmor").expect("zizmor ran");
+        assert!(!audit.contains(&"--offline".to_string()), "{audit:?}");
 
         let runner = FakeRunner::all_installed().logged_out();
         let (rows, _) = gate(&runner);
-        let zizmor = rows
-            .iter()
-            .find(|row| row.step == "zizmor")
-            .expect("zizmor ran");
-        assert_eq!(zizmor.outcome, Outcome::Passed("offline".to_string()));
-        let last = runner.ran().pop().expect("a command");
-        assert!(last.contains(&"--offline".to_string()), "{last:?}");
+        assert_eq!(
+            row(&rows, "zizmor").outcome,
+            Outcome::Passed("2 workflows, offline".to_string())
+        );
+        let audit = runner.command("zizmor").expect("zizmor ran");
+        assert!(audit.contains(&"--offline".to_string()), "{audit:?}");
     }
 
     /// In CI zizmor runs offline and is handed no token, even where `gh`
@@ -912,20 +2200,18 @@ mod tests {
     fn zizmor_runs_offline_in_ci_whatever_gh_answers() {
         let runner = FakeRunner::all_installed().in_ci();
         let (rows, _) = gate(&runner);
-        let zizmor = rows
+        assert_eq!(
+            row(&rows, "zizmor").outcome,
+            Outcome::Passed("2 workflows, offline".to_string())
+        );
+        let at = runner
+            .ran()
             .iter()
-            .find(|row| row.step == "zizmor")
+            .position(|command| basename(&command[0]) == "zizmor")
             .expect("zizmor ran");
-        assert_eq!(zizmor.outcome, Outcome::Passed("offline".to_string()));
-        let last = runner.ran().pop().expect("a command");
-        assert!(last.contains(&"--offline".to_string()), "{last:?}");
-        let env = runner
-            .envs
-            .borrow()
-            .last()
-            .cloned()
-            .expect("an environment");
-        assert!(!env.contains(&"GH_TOKEN".to_string()), "{env:?}");
+        assert!(runner.ran()[at].contains(&"--offline".to_string()));
+        let env = runner.envs.borrow()[at].clone();
+        assert!(env.iter().all(|(name, _)| name != "GH_TOKEN"), "{env:?}");
     }
 
     /// A pin file nothing can read stops the gate at its first row, before any
@@ -967,6 +2253,40 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    /// A config a tool would read in place of the named one stops the gate at
+    /// the opening row, before any tool runs, on disk and untracked alike.
+    #[test]
+    fn a_tree_finding_stops_the_gate_before_any_tool() {
+        let runner = FakeRunner::all_installed().untracked("crates/a/.cargo/config.toml");
+        let (rows, text) = gate(&runner);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].step, "pins");
+        assert_eq!(
+            rows[0].outcome,
+            Outcome::Unrun("resolve each finding above, which names what to change".to_string())
+        );
+        assert!(runner.ran().is_empty(), "a tool ran before the tree rules");
+        assert!(
+            text.contains("\"crates/a/.cargo/config.toml\" is a cargo config"),
+            "{text}"
+        );
+    }
+
+    /// This repository keeps no TypeScript project config, so a
+    /// `tsconfig.json` on disk stops the gate at the opening row.
+    #[test]
+    fn a_project_config_stops_the_gate() {
+        let runner = FakeRunner::all_installed().untracked("tsconfig.json");
+        let (rows, text) = gate(&runner);
+        assert!(
+            text.contains(
+                "\"tsconfig.json\" is a TypeScript project config the gate does not name"
+            ),
+            "a tsconfig.json passed the tree rules: {text}"
+        );
+        assert_eq!(rows.len(), 1, "{text}");
     }
 
     /// `--rows` prints the pin rules and every row, one line each, and runs

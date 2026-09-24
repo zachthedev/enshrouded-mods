@@ -8,9 +8,12 @@
 pub mod check;
 pub mod package;
 pub mod pins;
+mod proof;
 mod runner;
 mod server;
+mod shellcheck;
 mod spawn;
+mod tree;
 
 use std::io;
 use std::path::PathBuf;
@@ -62,8 +65,8 @@ enum Command {
         #[arg(long)]
         rows: bool,
     },
-    /// Hold both mise pin files and their lockfiles to their rules, which the gate
-    /// does first.
+    /// Hold both mise pin files, their lockfiles and the configs the gate's
+    /// tools read to their rules, which the gate does first.
     Pins,
     /// Build a mod's release bundle: one archive and its digest file.
     Package {
@@ -93,6 +96,14 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Stand in for `ShellCheck` under actionlint, which the gate's actionlint
+    /// row names.
+    #[command(name = shellcheck::SUBCOMMAND, hide = true)]
+    ShellcheckStandIn {
+        /// The `ShellCheck` path, then the arguments actionlint passes.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        args: Vec<String>,
+    },
 }
 
 /// The repository root, which is the directory above this crate's manifest.
@@ -118,6 +129,12 @@ fn dispatch() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
     let runner = Processes;
     let mut out = io::stdout();
+
+    // The gate reads the tree and starts every tool from the repository root,
+    // whichever directory it was started in.
+    if matches!(cli.command, Command::Check { .. } | Command::Pins) {
+        std::env::set_current_dir(repo_root()).context("entering the repository root")?;
+    }
 
     match cli.command {
         Command::Scopes => {
@@ -169,6 +186,7 @@ fn dispatch() -> anyhow::Result<ExitCode> {
             server::Delegate::new(&runner, repo_root()).run("schema", &args, &mut out)?;
             Ok(ExitCode::SUCCESS)
         }
+        Command::ShellcheckStandIn { args } => Ok(shellcheck::stand_in(&args)),
     }
 }
 

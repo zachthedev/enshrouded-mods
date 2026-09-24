@@ -24,3 +24,8 @@
 //! only text channel a dedicated server can drive, so every message to a player
 //! is a chat line. Dedicated servers ship with text chat off, and with it off
 //! the mod enforces scope silently.
+
+// `cargo xtask package` bundles the loader release matching the ember-sdk
+// version in Cargo.lock, so the crate names the SDK before any of its code uses
+// it, and cargo-machete reads this line as that use.
+use ember_sdk as _;
