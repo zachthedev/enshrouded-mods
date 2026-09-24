@@ -1047,7 +1047,7 @@ mod tests {
         ember_locked, ember_release, ember_tag, is_release, mods, read_mod, recorded_digest,
         refuse_escaping, run, sums_line, verified,
     };
-    use crate::runner::{Exit, Runner};
+    use crate::runner::{Captured, Exit, Runner};
 
     /// The bytes a fixture loader holds, which are not a real library and never
     /// reach one.
@@ -2110,6 +2110,18 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
                 put(&self.artifact, bytes);
             }
             Ok(Exit::Ok)
+        }
+
+        fn output(
+            &self,
+            _command: &[&str],
+            _env: &[(&str, &str)],
+            _input: Option<&str>,
+        ) -> io::Result<Captured> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "no row runs here",
+            ))
         }
 
         fn read_file(&self, _relative: &str) -> Option<String> {

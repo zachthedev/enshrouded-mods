@@ -5,7 +5,7 @@
   "description": "Commit message linting and markup formatting for the mods repository. The project itself is Rust.",
   "packageManager": "bun@1.4.2",
   "scripts": {
-    "prepare": "lefthook install"
+    "prepare": "bun ./node_modules/lefthook/bin/index.js install"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.2",

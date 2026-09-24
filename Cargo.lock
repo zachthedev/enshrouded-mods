@@ -411,10 +411,6 @@ dependencies = [
 [[package]]
 name = "mods-common"
 version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror",
-]
 
 [[package]]
 name = "no-std-compat"
@@ -474,11 +470,6 @@ name = "private-chests"
 version = "0.1.0"
 dependencies = [
  "ember-sdk",
- "mods-common",
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
 ]
 
 [[package]]
@@ -833,6 +824,7 @@ dependencies = [
  "anyhow",
  "clap",
  "owo-colors",
+ "proc-macro2",
  "serde",
  "serde_json",
  "sha2",

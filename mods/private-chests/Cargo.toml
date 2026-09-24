@@ -15,23 +15,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ember-sdk.workspace = true
-mods-common.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
 
 [lints]
 workspace = true
-
-# The crate is a skeleton, so each dependency is declared before the module that
-# uses it. A name leaves this list when that module lands.
-[package.metadata.cargo-machete]
-ignored = [
-    "ember-sdk",
-    "mods-common",
-    "serde",
-    "serde_json",
-    "thiserror",
-    "tracing",
-]
