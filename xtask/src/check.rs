@@ -99,6 +99,18 @@ const BUN_INSTALL: &str = "bun install";
 /// `node_modules` or in its own cache, where a path fails instead.
 const PRETTIER: &str = "./node_modules/prettier/bin/prettier.cjs";
 
+/// The flag every Bun a row starts carries. Bun loads an env file beside it
+/// into every `bun <file>` and `bun test`, an untracked one included.
+const NO_ENV_FILE: &str = "--no-env-file";
+
+/// The command that runs `script` under Bun, reading the paths it is handed
+/// on standard input.
+fn bun_script(script: &str) -> Vec<String> {
+    ["bun", NO_ENV_FILE, "-e", script]
+        .map(str::to_string)
+        .to_vec()
+}
+
 /// The rows that build test artifacts share a target directory of their own
 /// on Windows, where a test build cannot replace the running `xtask.exe` under
 /// `target/debug`.
@@ -112,7 +124,8 @@ const TEST_ENV: &[(&str, &str)] = if cfg!(windows) {
 /// completed inputs, set so a contributor's own `RUST_LOG` cannot hide them.
 const REPORTING: &[(&str, &str)] = &[("RUST_LOG", "info")];
 
-/// Every row, in the order they run.
+/// Every row, in the order they run. The rows that read files come before
+/// the rows that build and run repository code.
 pub const STEPS: &[Step] = &[
     Step {
         name: "fmt",
@@ -140,50 +153,6 @@ pub const STEPS: &[Step] = &[
         install: MISE_INSTALL,
         env: REPORTING,
         proof: Proof::Taplo,
-    },
-    Step {
-        name: "clippy",
-        covers: "Lints on every target, warnings denied, with clippy.toml read from the root alone",
-        program: Program::Path("cargo"),
-        args: &[
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--locked",
-            "--",
-            "-D",
-            "warnings",
-        ],
-        install: "rustup component add clippy",
-        env: &[],
-        proof: Proof::Exit,
-    },
-    Step {
-        name: "tests",
-        covers: "The test suites, under cargo-nextest",
-        program: Program::Mise("cargo-nextest"),
-        args: &["nextest", "run", "--workspace", "--locked"],
-        install: MISE_INSTALL,
-        env: TEST_ENV,
-        proof: Proof::Exit,
-    },
-    Step {
-        name: "doctests",
-        covers: "Every documented example, which nextest runs none of",
-        program: Program::Path("cargo"),
-        args: &["test", "--workspace", "--doc", "--locked"],
-        install: RUSTUP,
-        env: TEST_ENV,
-        proof: Proof::Exit,
-    },
-    Step {
-        name: "doc",
-        covers: "rustdoc over every crate, warnings denied",
-        program: Program::Path("cargo"),
-        args: &["doc", "--workspace", "--no-deps", "--locked"],
-        install: RUSTUP,
-        env: &[("RUSTDOCFLAGS", "-D warnings")],
-        proof: Proof::Exit,
     },
     Step {
         name: "deny",
@@ -222,6 +191,7 @@ pub const STEPS: &[Step] = &[
         // narrows the list, --config stops the search for another config, and
         // --no-editorconfig keeps any .editorconfig from setting an option.
         args: &[
+            NO_ENV_FILE,
             PRETTIER,
             "--check",
             "--config",
@@ -264,6 +234,60 @@ pub const STEPS: &[Step] = &[
         install: MISE_INSTALL,
         env: REPORTING,
         proof: Proof::Zizmor,
+    },
+    Step {
+        name: "clippy",
+        covers: "Lints on every target, warnings denied, with clippy.toml read from the root alone",
+        program: Program::Path("cargo"),
+        args: &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        install: "rustup component add clippy",
+        env: &[],
+        proof: Proof::Exit,
+    },
+    Step {
+        name: "tests",
+        covers: "The test suites, under cargo-nextest, failing when no test ran",
+        program: Program::Mise("cargo-nextest"),
+        // --no-tests=fail fails a run that skipped every test, and no user
+        // config reaches the run.
+        args: &[
+            "nextest",
+            "run",
+            "--workspace",
+            "--locked",
+            "--no-tests=fail",
+            "--user-config-file",
+            "none",
+        ],
+        install: MISE_INSTALL,
+        env: TEST_ENV,
+        proof: Proof::Exit,
+    },
+    Step {
+        name: "doctests",
+        covers: "Every documented example, which nextest runs none of",
+        program: Program::Path("cargo"),
+        args: &["test", "--workspace", "--doc", "--locked"],
+        install: RUSTUP,
+        env: TEST_ENV,
+        proof: Proof::Exit,
+    },
+    Step {
+        name: "doc",
+        covers: "rustdoc over every crate, warnings denied",
+        program: Program::Path("cargo"),
+        args: &["doc", "--workspace", "--no-deps", "--locked"],
+        install: RUSTUP,
+        env: &[("RUSTDOCFLAGS", "-D warnings")],
+        proof: Proof::Exit,
     },
 ];
 
@@ -547,8 +571,8 @@ impl<'a> Gate<'a> {
         };
         if let Some(entry) = step
             .args
-            .first()
-            .and_then(|arg| arg.strip_prefix("./"))
+            .iter()
+            .find_map(|arg| arg.strip_prefix("./"))
             .filter(|entry| entry.starts_with("node_modules/"))
             && !self.runner.exists(entry)
         {
@@ -833,11 +857,7 @@ impl<'a> Gate<'a> {
             .cloned()
             .collect();
         if !workflows.is_empty() {
-            let ask = vec![
-                "bun".to_string(),
-                "-e".to_string(),
-                shellcheck::WORKFLOW_SHELLS.to_string(),
-            ];
+            let ask = bun_script(shellcheck::WORKFLOW_SHELLS);
             let captured = match self.capture(out, &ask, &[], Some(&workflows.join("\0")))? {
                 Ok(captured) => captured,
                 Err(sentence) => return Ok(Err(format!("{sentence}: {BUN_INSTALL}"))),
@@ -922,11 +942,7 @@ impl<'a> Gate<'a> {
         prepared: &Prepared,
         tracked: &[String],
     ) -> io::Result<Result<String, String>> {
-        let ask = vec![
-            "bun".to_string(),
-            "-e".to_string(),
-            proof::PRETTIER_FILES.to_string(),
-        ];
+        let ask = bun_script(proof::PRETTIER_FILES);
         let listed = tracked.join("\0");
         let captured = match self.capture(out, &ask, &[], Some(&listed))? {
             Ok(captured) => captured,
@@ -1305,7 +1321,7 @@ mod tests {
         fn running(&self, entry: &str) -> Option<Vec<String>> {
             self.ran()
                 .into_iter()
-                .find(|command| command.get(1).map(String::as_str) == Some(entry))
+                .find(|command| command.iter().any(|arg| arg == entry))
         }
 
         fn ran(&self) -> Vec<Vec<String>> {
@@ -1394,10 +1410,10 @@ mod tests {
                     };
                     (lines(&analyzed, shape), lines(&self.unreadable, failed))
                 }
-                "bun" if command.get(2) == Some(&shellcheck::WORKFLOW_SHELLS) => {
+                "bun" if script(command) == Some(shellcheck::WORKFLOW_SHELLS) => {
                     (self.shells(input), String::new())
                 }
-                "bun" if command.get(2) == Some(&proof::PRETTIER_FILES) => {
+                "bun" if script(command) == Some(proof::PRETTIER_FILES) => {
                     let kept: Vec<&str> = input
                         .unwrap_or("")
                         .split('\0')
@@ -1474,6 +1490,12 @@ mod tests {
     /// The file name a command runs, without its directory.
     fn basename(program: &str) -> &str {
         program.rsplit(['/', '\\']).next().unwrap_or(program)
+    }
+
+    /// The script a `bun -e` command evaluates.
+    fn script<'a>(command: &[&'a str]) -> Option<&'a str> {
+        let at = command.iter().position(|arg| *arg == "-e")?;
+        command.get(at + 1).copied()
     }
 
     /// The pin file and lockfile for `pair` the fake reads, built from
@@ -1688,15 +1710,15 @@ mod tests {
             [
                 "fmt",
                 "taplo",
-                "clippy",
-                "tests",
-                "doctests",
-                "doc",
                 "deny",
                 "machete",
                 "prettier",
                 "actionlint",
-                "zizmor"
+                "zizmor",
+                "clippy",
+                "tests",
+                "doctests",
+                "doc"
             ]
         );
         let runner = FakeRunner::all_installed();
@@ -1809,9 +1831,10 @@ mod tests {
         );
         carries("taplo", " --config .taplo.toml -- ");
         carries("zizmor", " --config .github/zizmor.yml ");
+        carries("cargo-nextest", " --no-tests=fail --user-config-file none");
         let prettier = runner.running(PRETTIER).expect("prettier ran").join(" ");
         let wanted = format!(
-            "bun {PRETTIER} --check --config .prettierrc --ignore-path .prettierignore --no-editorconfig -- "
+            "bun --no-env-file {PRETTIER} --check --config .prettierrc --ignore-path .prettierignore --no-editorconfig -- "
         );
         assert!(
             prettier.starts_with(&wanted),
@@ -1827,6 +1850,27 @@ mod tests {
             env.contains(&("CLIPPY_CONF_DIR".to_string(), ROOT.to_string())),
             "clippy ran with {env:?}, and it must set CLIPPY_CONF_DIR to {ROOT}"
         );
+    }
+
+    /// Every Bun the gate starts skips env files, a script it evaluates and
+    /// the rows it runs alike, so no untracked env file reaches one.
+    #[test]
+    fn every_bun_the_gate_starts_skips_env_files() {
+        let runner = FakeRunner::all_installed();
+        gate(&runner);
+        let buns: Vec<Vec<String>> = runner
+            .ran()
+            .into_iter()
+            .filter(|command| basename(&command[0]) == "bun")
+            .collect();
+        assert!(buns.len() >= 3, "the gate started {} Buns", buns.len());
+        for command in buns {
+            assert_eq!(
+                command.get(1).map(String::as_str),
+                Some("--no-env-file"),
+                "Bun ran as {command:?}"
+            );
+        }
     }
 
     /// cargo-machete is handed each tracked crate's directory, and never the
@@ -1849,17 +1893,17 @@ mod tests {
         let runner = FakeRunner::all_installed();
         gate(&runner);
         let ask = runner.command("bun").expect("bun asked Prettier");
-        assert_eq!(ask[1], "-e");
-        assert!(ask[2].contains("resolveConfig: false"), "{}", ask[2]);
+        assert_eq!(ask[1..3], ["--no-env-file", "-e"]);
+        assert!(ask[3].contains("resolveConfig: false"), "{}", ask[3]);
         assert!(
-            ask[2].contains("ignorePath: '.prettierignore'"),
+            ask[3].contains("ignorePath: '.prettierignore'"),
             "{}",
-            ask[2]
+            ask[3]
         );
         assert!(
-            ask[2].contains("import('./node_modules/prettier/index.mjs')"),
+            ask[3].contains("import('./node_modules/prettier/index.mjs')"),
             "the file-info script imports Prettier from outside the checkout: {}",
-            ask[2]
+            ask[3]
         );
         let bunx = runner.running(PRETTIER).expect("prettier ran");
         let handed = &bunx[bunx.iter().position(|arg| arg == "--").expect("--") + 1..];
