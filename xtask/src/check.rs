@@ -64,7 +64,17 @@ pub enum Proof {
     /// workflows. A second pass with no config and no ignores holds every job
     /// passing `secrets: inherit` to the shared workflows.
     Zizmor,
+    /// `cargo test --doc` counts every documented example, and the row fails on
+    /// a filtered run, on every example ignored, and on none unless
+    /// [`NO_DOC_EXAMPLES`] declares none.
+    Doctests,
 }
+
+/// Whether this repository declares it holds no documented example. Its crates
+/// carry module docs alone until the mod code lands. The doctests row fails
+/// once it counts an example, so the change that adds the first one clears
+/// this.
+const NO_DOC_EXAMPLES: bool = true;
 
 /// One row of the gate.
 pub struct Step {
@@ -94,14 +104,22 @@ const RUSTUP: &str = "rustup toolchain install";
 /// What to run when the Bun packages a row starts are absent.
 const BUN_INSTALL: &str = "bun install";
 
-/// Prettier's command-line entry in the checkout, which Bun runs by its path.
-/// bunx finds a package the checkout lacks on PATH, in a parent
-/// `node_modules` or in its own cache, where a path fails instead.
-const PRETTIER: &str = "./node_modules/prettier/bin/prettier.cjs";
+/// Prettier's command-line name, which `bunx --bun --no-install` runs once the
+/// row finds it in the checkout's `node_modules/.bin`.
+const PRETTIER: &str = "prettier";
 
-/// The flag every Bun a row starts carries. Bun loads an env file beside it
-/// into every `bun <file>` and `bun test`, an untracked one included.
+/// The flag every Bun the gate starts itself carries. Bun loads an env file
+/// beside it into every `bun <file>`, `bun -e` and `bun test`, an untracked one
+/// included. bunx takes the flag and never passes it on, so a tool it starts
+/// loads the file.
 const NO_ENV_FILE: &str = "--no-env-file";
+
+/// Where the install puts `tool`'s command in the checkout, as bunx finds it
+/// first: `node_modules/.bin/<tool>`, an `.exe` on Windows.
+fn installed_bin(tool: &str) -> String {
+    let extension = if cfg!(windows) { ".exe" } else { "" };
+    format!("node_modules/.bin/{tool}{extension}")
+}
 
 /// The command that runs `script` under Bun, reading the paths it is handed
 /// on standard input.
@@ -186,12 +204,13 @@ pub const STEPS: &[Step] = &[
     Step {
         name: "prettier",
         covers: "Markup, JavaScript and TypeScript formatting over every tracked file Prettier formats, under .prettierrc alone",
-        program: Program::Path("bun"),
+        program: Program::Path("bunx"),
         // --ignore-path names .prettierignore alone, so .gitignore never
         // narrows the list, --config stops the search for another config, and
         // --no-editorconfig keeps any .editorconfig from setting an option.
         args: &[
-            NO_ENV_FILE,
+            "--bun",
+            "--no-install",
             PRETTIER,
             "--check",
             "--config",
@@ -273,12 +292,12 @@ pub const STEPS: &[Step] = &[
     },
     Step {
         name: "doctests",
-        covers: "Every documented example, which nextest runs none of",
+        covers: "Every documented example, which nextest runs none of, each proven run",
         program: Program::Path("cargo"),
         args: &["test", "--workspace", "--doc", "--locked"],
         install: RUSTUP,
         env: TEST_ENV,
-        proof: Proof::Exit,
+        proof: Proof::Doctests,
     },
     Step {
         name: "doc",
@@ -569,14 +588,15 @@ impl<'a> Gate<'a> {
                 .to_string(),
             Program::Path(name) => name.to_string(),
         };
-        if let Some(entry) = step
-            .args
-            .iter()
-            .find_map(|arg| arg.strip_prefix("./"))
-            .filter(|entry| entry.starts_with("node_modules/"))
-            && !self.runner.exists(entry)
+        // bunx runs a copy from a parent directory or PATH when the checkout
+        // holds none, so a row it starts needs the checkout's own first.
+        if step.program == Program::Path("bunx")
+            && let Some(tool) = step.args.iter().find(|arg| !arg.starts_with("--"))
         {
-            return Err(format!("{entry} is not in the checkout: {}", step.install));
+            let bin = installed_bin(tool);
+            if !self.runner.exists(&bin) {
+                return Err(format!("{bin} is not in the checkout: {}", step.install));
+            }
         }
         let mut command = vec![program];
         command.extend(step.args.iter().map(|arg| (*arg).to_string()));
@@ -756,6 +776,7 @@ impl<'a> Gate<'a> {
             Proof::Prettier => self.prove_prettier(out, prepared, &existing),
             Proof::Actionlint => self.prove_actionlint(out, prepared, &existing, &root),
             Proof::Zizmor => self.prove_zizmor(out, prepared, &existing, &root),
+            Proof::Doctests => self.prove_doctests(out, prepared),
         }
     }
 
@@ -879,6 +900,28 @@ impl<'a> Gate<'a> {
             }
         }
         self.prove_batches(out, prepared, tracked, root, &Batched::ACTIONLINT)
+    }
+
+    /// The doctests row: the examples `cargo test --doc` counts must show one
+    /// ran, or that none exists where none is declared.
+    fn prove_doctests(
+        &self,
+        out: &mut dyn Write,
+        prepared: &Prepared,
+    ) -> io::Result<Result<String, String>> {
+        let captured = match self.capture(out, &prepared.command, &prepared.env, None)? {
+            Ok(captured) => captured,
+            Err(sentence) => return Ok(Err(sentence)),
+        };
+        if captured.exit == Exit::Err {
+            return Ok(Err(
+                "cargo test --doc exited non-zero, and its output is above".to_string(),
+            ));
+        }
+        Ok(
+            proof::doctest_examples(&format!("{}\n{}", captured.stdout, captured.stderr))
+                .and_then(|examples| proof::doctests_proven(examples, NO_DOC_EXAMPLES)),
+        )
     }
 
     /// The machete row: every tracked crate's directory is handed over, and
@@ -1197,7 +1240,7 @@ mod tests {
         unrefused: bool,
         /// The shell every workflow step reports.
         shell: &'static str,
-        /// Paths under `node_modules` that `exists` answers false for.
+        /// Tools whose command the install left out of `node_modules/.bin`.
         uninstalled: Vec<&'static str>,
         /// Crate directories cargo-machete cannot read, which it names on a line
         /// of its own and still reports as clean.
@@ -1207,6 +1250,9 @@ mod tests {
         plants: Vec<(&'static str, &'static str)>,
         /// Where the shell report says each workflow's one shell is set.
         step_at: &'static str,
+        /// The documented examples `cargo test --doc` reports passed, ignored
+        /// and filtered out.
+        examples: (usize, usize, usize),
         /// Every command passed to `run` or `output`, in order.
         ran: RefCell<Vec<Vec<String>>>,
         /// The environment each of those commands set, in the same order.
@@ -1232,6 +1278,7 @@ mod tests {
                 unreadable: Vec::new(),
                 plants: Vec::new(),
                 step_at: "jobs.a.steps[0].shell",
+                examples: (0, 0, 0),
                 ran: RefCell::new(Vec::new()),
                 envs: RefCell::new(Vec::new()),
             }
@@ -1254,6 +1301,11 @@ mod tests {
 
         fn failing(mut self, program: &'static str) -> Self {
             self.failing.push(program);
+            self
+        }
+
+        fn uninstalled(mut self, tool: &'static str) -> Self {
+            self.uninstalled.push(tool);
             self
         }
 
@@ -1297,11 +1349,6 @@ mod tests {
             self
         }
 
-        fn uninstalled(mut self, path: &'static str) -> Self {
-            self.uninstalled.push(path);
-            self
-        }
-
         fn unreadable(mut self, dir: &'static str) -> Self {
             self.unreadable.push(dir);
             self
@@ -1314,6 +1361,11 @@ mod tests {
 
         fn step_at(mut self, at: &'static str) -> Self {
             self.step_at = at;
+            self
+        }
+
+        fn examples(mut self, passed: usize, ignored: usize, filtered: usize) -> Self {
+            self.examples = (passed, ignored, filtered);
             self
         }
 
@@ -1357,6 +1409,19 @@ mod tests {
     }
 
     impl FakeRunner {
+        /// What `cargo test --doc` prints for the examples the case sets, one
+        /// crate's header on standard error and its result line on standard
+        /// output.
+        fn doctests(&self) -> (String, String) {
+            let (passed, ignored, filtered) = self.examples;
+            (
+                format!(
+                    "test result: ok. {passed} passed; 0 failed; {ignored} ignored; 0 measured; {filtered} filtered out; finished in 0.00s\n"
+                ),
+                "   Doc-tests a\n".to_string(),
+            )
+        }
+
         /// What `program` prints to standard output and standard error for
         /// `command`: each tool's report of what it read, less what the case
         /// has it leave out.
@@ -1367,6 +1432,7 @@ mod tests {
                 .map(|at| command[at + 1..].to_vec())
                 .unwrap_or_default();
             match program {
+                "cargo" if command.get(1) == Some(&"test") => self.doctests(),
                 "cargo" => {
                     let rust: Vec<&str> = self
                         .tracked
@@ -1676,7 +1742,14 @@ mod tests {
 
         fn exists(&self, relative: &str) -> bool {
             self.tracked.contains(&relative)
-                || (relative.starts_with("node_modules/") && !self.uninstalled.contains(&relative))
+                || relative
+                    .strip_prefix("node_modules/.bin/")
+                    .is_some_and(|bin| {
+                        !self
+                            .uninstalled
+                            .iter()
+                            .any(|tool| bin.trim_end_matches(".exe") == *tool)
+                    })
         }
 
         fn root(&self) -> PathBuf {
@@ -1734,6 +1807,7 @@ mod tests {
             ("prettier", "5 files"),
             ("actionlint", "2 files"),
             ("zizmor", "2 workflows, online"),
+            ("doctests", "no examples, as declared"),
         ] {
             assert_eq!(
                 row(&rows, step).outcome,
@@ -1747,6 +1821,30 @@ mod tests {
                 "{} says nothing about what it covers",
                 step.name
             );
+        }
+    }
+
+    /// This repository declares no documented example, so the doctests row
+    /// fails the moment `cargo test --doc` counts one, and on a filtered run.
+    #[test]
+    fn the_doctests_row_holds_the_declaration_of_none() {
+        for (what, runner, sentence) in [
+            (
+                "an example counted",
+                FakeRunner::all_installed().examples(1, 0, 0),
+                "the gate declares no documented example, and cargo test --doc counted 1. Remove the declaration",
+            ),
+            (
+                "an example filtered out",
+                FakeRunner::all_installed().examples(0, 0, 1),
+                "cargo test --doc filtered out 1 example, so the row did not run them all",
+            ),
+        ] {
+            let (rows, text) = gate(&runner);
+            let last = rows.last().expect("one row");
+            assert_eq!(last.step, "doctests", "{what}");
+            assert_eq!(last.outcome, Outcome::Failed, "{what}");
+            assert!(text.contains(sentence), "{what}: {text}");
         }
     }
 
@@ -1834,7 +1932,7 @@ mod tests {
         carries("cargo-nextest", " --no-tests=fail --user-config-file none");
         let prettier = runner.running(PRETTIER).expect("prettier ran").join(" ");
         let wanted = format!(
-            "bun --no-env-file {PRETTIER} --check --config .prettierrc --ignore-path .prettierignore --no-editorconfig -- "
+            "bunx --bun --no-install {PRETTIER} --check --config .prettierrc --ignore-path .prettierignore --no-editorconfig -- "
         );
         assert!(
             prettier.starts_with(&wanted),
@@ -1852,8 +1950,8 @@ mod tests {
         );
     }
 
-    /// Every Bun the gate starts skips env files, a script it evaluates and
-    /// the rows it runs alike, so no untracked env file reaches one.
+    /// Every Bun the gate starts itself skips env files, so no untracked env
+    /// file reaches a script it evaluates.
     #[test]
     fn every_bun_the_gate_starts_skips_env_files() {
         let runner = FakeRunner::all_installed();
@@ -1863,7 +1961,7 @@ mod tests {
             .into_iter()
             .filter(|command| basename(&command[0]) == "bun")
             .collect();
-        assert!(buns.len() >= 3, "the gate started {} Buns", buns.len());
+        assert!(buns.len() >= 2, "the gate started {} Buns", buns.len());
         for command in buns {
             assert_eq!(
                 command.get(1).map(String::as_str),
@@ -2157,22 +2255,26 @@ mod tests {
         assert!(text.contains("jobs.a\\u{1b}[2K.steps[0].shell"), "{text:?}");
     }
 
-    /// A JavaScript tool runs by its path in the checkout, and its row refuses
-    /// to run when the package is not installed there.
+    /// A JavaScript tool bunx starts must be in the checkout's own
+    /// `node_modules/.bin`, or its row refuses to run: bunx would run a copy
+    /// from a parent directory or PATH.
     #[test]
     fn a_js_tool_missing_from_the_checkout_stops_its_row() {
-        let runner =
-            FakeRunner::all_installed().uninstalled("node_modules/prettier/bin/prettier.cjs");
+        let runner = FakeRunner::all_installed().uninstalled("prettier");
         let (rows, _) = gate(&runner);
         let last = rows.last().expect("one row");
+        assert_eq!(last.step, "prettier");
         assert_eq!(
             last.outcome,
-            Outcome::Unrun(
-                "node_modules/prettier/bin/prettier.cjs is not in the checkout: bun install"
-                    .to_string()
-            )
+            Outcome::Unrun(format!(
+                "{} is not in the checkout: bun install",
+                super::installed_bin("prettier")
+            ))
         );
-        assert_eq!(last.step, "prettier");
+        assert!(
+            runner.running(PRETTIER).is_none(),
+            "prettier ran from somewhere the checkout does not hold"
+        );
     }
 
     /// The row refuses to run when the directive canary comes back analyzed,
