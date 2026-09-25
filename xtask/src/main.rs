@@ -1,7 +1,8 @@
 //! Repository automation, run as `cargo xtask <command>`.
 //!
-//! `check` is the gate, and `pins` is its first step run alone. `package`
-//! builds a mod's release bundle. `server`
+//! `check` is the gate, and `pins` is its first step run alone. `tools`
+//! installs what the pin files name, once they pass. `package` builds a mod's
+//! release bundle. `server`
 //! and `schema` forward to Ember's xtask through the submodule, because those
 //! drive Keen's binary rather than anything this repository owns.
 
@@ -68,6 +69,9 @@ enum Command {
     /// Hold both mise pin files, their lockfiles and the configs the gate's
     /// tools read to their rules, which the gate does first.
     Pins,
+    /// Install every tool mise.toml pins, from mise.lock, once the pin files
+    /// pass their rules.
+    Setup,
     /// Build a mod's release bundle: one archive and its digest file.
     Package {
         /// The mod to bundle, by its package name.
@@ -162,6 +166,10 @@ fn dispatch() -> anyhow::Result<ExitCode> {
             } else {
                 ExitCode::SUCCESS
             })
+        }
+        Command::Setup => {
+            spawn::mise_install(&repo_root()).map_err(anyhow::Error::msg)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Package {
             subject,
