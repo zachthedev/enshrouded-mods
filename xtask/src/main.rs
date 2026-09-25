@@ -1,6 +1,6 @@
 //! Repository automation, run as `cargo xtask <command>`.
 //!
-//! `check` is the gate, and `pins` is its first step run alone. `tools`
+//! `check` is the gate, and `pins` is its first step run alone. `setup`
 //! installs what the pin files name, once they pass. `package` builds a mod's
 //! release bundle. `server`
 //! and `schema` forward to Ember's xtask through the submodule, because those
@@ -85,8 +85,17 @@ enum Command {
         out: PathBuf,
         /// A loader already on disk, with its SHA256SUMS beside it, in place of
         /// the download from Ember's release.
-        #[arg(long, value_name = "PATH")]
+        #[arg(long, value_name = "PATH", conflicts_with = "ember_release")]
         ember_loader: Option<PathBuf>,
+        /// A directory an earlier job filled from Ember's release: the loader,
+        /// its SHA256SUMS and a TAG file naming the release, which must be the
+        /// one the lockfile resolves.
+        #[arg(long, value_name = "DIR", requires = "ember_release_digest")]
+        ember_release: Option<PathBuf>,
+        /// The loader's SHA-256 as the job that filled `--ember-release`
+        /// recorded it, which the loader must match.
+        #[arg(long, value_name = "SHA256", requires = "ember_release")]
+        ember_release_digest: Option<String>,
     },
     /// Drive the development server through Ember's xtask.
     Server {
@@ -176,12 +185,17 @@ fn dispatch() -> anyhow::Result<ExitCode> {
             tag,
             out: into,
             ember_loader,
+            ember_release,
+            ember_release_digest,
         } => {
             let request = package::Request {
                 subject,
                 tag,
                 out: into,
-                loader: ember_loader,
+                loader: package::LoaderFrom::from_flags(
+                    ember_loader,
+                    ember_release.zip(ember_release_digest),
+                ),
             };
             package::run(&runner, &repo_root(), &request, &mut out)?;
             Ok(ExitCode::SUCCESS)
