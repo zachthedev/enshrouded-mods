@@ -196,7 +196,11 @@ pub const STEPS: &[Step] = &[
         program: Program::Mise("cargo-machete"),
         // Each tracked crate's directory is handed over by name, so no ignore
         // file decides what the walk reaches and the submodule never enters it.
-        args: &["--no-ignore", "--skip-target-dir"],
+        // --with-metadata reads the resolved graph, which holds every target
+        // table; without it only [dependencies] is read. It runs cargo
+        // metadata, which rewrites a stale Cargo.lock, and the xtask alias's
+        // --locked refuses a stale one before any row runs.
+        args: &["--no-ignore", "--skip-target-dir", "--with-metadata"],
         install: MISE_INSTALL,
         env: &[],
         proof: Proof::Machete,
@@ -1973,6 +1977,7 @@ mod tests {
 
     /// cargo-machete is handed each tracked crate's directory, and never the
     /// root, so the walk reaches nothing a crate's own directory does not hold.
+    /// It reads the resolved graph, so a target table's dependencies are read.
     #[test]
     fn machete_is_handed_each_tracked_crate() {
         let runner = FakeRunner::all_installed();
@@ -1980,7 +1985,13 @@ mod tests {
         let machete = runner.command("cargo-machete").expect("machete ran");
         assert_eq!(
             machete[1..],
-            ["--no-ignore", "--skip-target-dir", "crates/a", "xtask"]
+            [
+                "--no-ignore",
+                "--skip-target-dir",
+                "--with-metadata",
+                "crates/a",
+                "xtask"
+            ]
         );
     }
 
