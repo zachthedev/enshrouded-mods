@@ -43,17 +43,16 @@ reach a player. With it off the mod still enforces scope; it just says nothing.
 
 ## Documentation
 
-| File                                                             | For                                                                  |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------- |
-| [docs/install.md](docs/install.md)                               | Installing a mod on a server, checking the download, upgrading       |
-| [docs/mods.md](docs/mods.md)                                     | What each mod does, and where its own documents are                  |
-| [Running private-chests](mods/private-chests/docs/admin.md)      | The mod's settings and the chat verbs                                |
-| [Draw and deposit paths](mods/private-chests/docs/draw-paths.md) | How the game itself moves items into and out of containers           |
-| [docs/dev.md](docs/dev.md)                                       | What to install, the first run, the dev server                       |
-| [fixtures/README.md](fixtures/README.md)                         | The worlds and configurations the dev server is seeded with          |
-| [CONTRIBUTING.md](CONTRIBUTING.md)                               | The gate, the commit convention, where code goes, what never happens |
-| [SECURITY.md](SECURITY.md)                                       | How to report a vulnerability and what is in scope                   |
-| [AGENTS.md](AGENTS.md)                                           | What an agent reads first, runs to verify, and never does            |
+| File                                                             | For                                                                 |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------- |
+| [docs/install.md](docs/install.md)                               | Installing a mod on a server, checking the download, upgrading      |
+| [docs/mods.md](docs/mods.md)                                     | What each mod does, and where its own documents are                 |
+| [Running private-chests](mods/private-chests/docs/admin.md)      | The mod's settings and the chat verbs                               |
+| [Draw and deposit paths](mods/private-chests/docs/draw-paths.md) | How the game itself moves items into and out of containers          |
+| [fixtures/README.md](fixtures/README.md)                         | The worlds and configurations the dev server is seeded with         |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                               | Setup, the dev server, the gate, commits, releases, troubleshooting |
+| [SECURITY.md](SECURITY.md)                                       | How to report a vulnerability and what is in scope                  |
+| [AGENTS.md](AGENTS.md)                                           | What an agent reads first, runs to verify, and never does           |
 
 ## Layout
 
