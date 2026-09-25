@@ -103,10 +103,12 @@ procedural macros included.
 
 Some of your own environment reaches the tools:
 
-- `BUN_OPTIONS`, `BUN_INSPECT`, `BUN_INSPECT_CONNECT_TO` and
-  `BUN_INSPECT_PRELOAD` stay unset. Bun reads each into every process it
-  starts, as flags, a preload or an open inspector. The gate withholds
-  `BUN_OPTIONS` from its children, and the hooks withhold nothing.
+- `BUN_OPTIONS` reaches every Bun you start directly: `bun install`, and the
+  lefthook install its `prepare` script starts through Bun. A `--preload` in it
+  runs first in each. The gate withholds it from every process it starts.
+  `BUN_INSPECT`, `BUN_INSPECT_CONNECT_TO` and `BUN_INSPECT_PRELOAD` open an
+  inspector or run a module in any Bun that sees them, the gate's own
+  included. Leave all four unset.
 - A personal env file reaches the JavaScript tools. bunx never passes
   `--no-env-file` to the tool it starts, so Prettier in the gate and commitlint
   in the hooks load an env file at the checkout's root. Every Bun the gate
@@ -300,13 +302,15 @@ redirects code from a file that reads as data:
 - `rust-toolchain.toml` names a channel and its components, and nothing else.
 - No TypeScript project config sets `noCheck`, and one the gate does not name
   is refused.
+- No tracked `package.json` carries `patchedDependencies`, since `bun install`
+  rewrites each package it names with a patch. The shared `commits` job refuses
+  it too, but its check passes a file its `jq` cannot parse.
 - No tracked `package.json` or named TypeScript project config repeats a key
   within one object, since Bun keeps the first and a JSON parser the last.
 
 The shared `commits` job refuses the data files that run code before a merge,
-reading the committed tree, and the gate does not repeat them: a
-`patchedDependencies` key, a `bunfig.toml` key beyond
-`[install] minimumReleaseAge`, and TypeScript `paths` or `baseUrl`.
+reading the committed tree, and the gate does not repeat them: a `bunfig.toml`
+key beyond `[install] minimumReleaseAge`, and TypeScript `paths` or `baseUrl`.
 
 Every JavaScript tool a row or a hook starts runs through
 `bunx --bun --no-install`, which fetches nothing. bunx runs a copy from a
@@ -561,9 +565,9 @@ A local run that fails, or that differs from continuous integration:
   removes a package the lockfile dropped, and `node_modules` stays the same
   across a branch switch. Delete `node_modules` and install again.
 - **A result differs on your machine alone.** A personal env file at the
-  checkout's root reaches Prettier and commitlint, and a Bun variable reaches
-  every Bun a hook starts, as [Safety](#safety) says. Move the file aside,
-  leave `BUN_OPTIONS` and the `BUN_INSPECT` names unset, and run again.
+  checkout's root reaches Prettier and commitlint, and the Bun variables reach
+  Bun as [Safety](#safety) says. Move the file aside, leave `BUN_OPTIONS` and
+  the `BUN_INSPECT` names unset, and run again.
 - **The gate stops before its first row after a manifest edit.** `cargo xtask`
   runs `--locked`, so relock with a plain `cargo build` first.
 - **The gate refuses `Cargo.lock` after building against Ember's source.**
