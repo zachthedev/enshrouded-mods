@@ -111,8 +111,13 @@ mod tests {
     }
 
     impl Runner for FakeRunner {
-        fn capture(&self, _command: &[&str]) -> Option<String> {
-            Some(String::new())
+        fn capture_within(
+            &self,
+            _command: &[&str],
+            _env: &[(&str, &str)],
+            _deadline: std::time::Duration,
+        ) -> Option<String> {
+            None
         }
 
         fn capture_any(&self, _command: &[&str]) -> Option<String> {

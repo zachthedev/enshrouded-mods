@@ -25,7 +25,7 @@ use sha2::{Digest as _, Sha256};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use crate::runner::{Exit, Runner};
+use crate::runner::{self, Exit, Runner};
 
 // ///////////////////////////////////////////////
 // The layout
@@ -599,13 +599,21 @@ impl<'a> Release<'a> {
 }
 
 impl Source for Release<'_> {
+    /// Every child loses the token names gh reads, so this call hands gh back
+    /// the ones this process holds, which is how a caller with no gh login
+    /// passes a token.
     fn stage(&self, into: &Path) -> anyhow::Result<Staged> {
         let command = Self::command(&self.tag, into);
         let borrowed: Vec<&str> = command.iter().map(String::as_str).collect();
         let line = command.join(" ");
+        let own = runner::gh_own_tokens(self.runner);
+        let env: Vec<(&str, &str)> = own
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect();
         match self
             .runner
-            .run(&borrowed, &[])
+            .run(&borrowed, &env)
             .with_context(|| format!("failed to start: {line}"))?
         {
             Exit::Ok => {}
@@ -2078,6 +2086,102 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         assert_eq!(patterns, vec!["POWRPROF.dll", "SHA256SUMS"]);
     }
 
+    /// A `Runner` holding a fixed set of variables, which records the variables
+    /// each command it runs is handed.
+    struct TokenRunner {
+        /// The variables this process holds.
+        held: &'static [(&'static str, &'static str)],
+        /// The variables each run was handed, in order.
+        handed: RefCell<Vec<Vec<(String, String)>>>,
+    }
+
+    impl Runner for TokenRunner {
+        fn capture_within(
+            &self,
+            _command: &[&str],
+            _env: &[(&str, &str)],
+            _deadline: std::time::Duration,
+        ) -> Option<String> {
+            None
+        }
+
+        fn capture_any(&self, _command: &[&str]) -> Option<String> {
+            None
+        }
+
+        fn run(&self, _command: &[&str], env: &[(&str, &str)]) -> io::Result<Exit> {
+            let env = env
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect();
+            self.handed.borrow_mut().push(env);
+            Ok(Exit::Ok)
+        }
+
+        fn output(
+            &self,
+            _command: &[&str],
+            _env: &[(&str, &str)],
+            _input: Option<&str>,
+        ) -> io::Result<Captured> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "no row runs here",
+            ))
+        }
+
+        fn read_file(&self, _relative: &str) -> Option<String> {
+            None
+        }
+
+        fn resolve(&self, tool: &str) -> Result<PathBuf, String> {
+            Err(format!("mise resolves no {tool}"))
+        }
+
+        fn env_var(&self, name: &str) -> Option<String> {
+            self.held
+                .iter()
+                .find(|(held, _)| *held == name)
+                .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    /// Every child loses the token names gh reads, so the download hands gh
+    /// back each one this process holds, and no other variable.
+    #[test]
+    fn the_download_hands_gh_the_tokens_this_process_holds() {
+        let pair = |name: &str, value: &str| (name.to_string(), value.to_string());
+        for (what, held, wanted) in [
+            ("no token", &[][..], vec![]),
+            (
+                "GH_TOKEN alone",
+                &[("GH_TOKEN", "gh-value")][..],
+                vec![pair("GH_TOKEN", "gh-value")],
+            ),
+            (
+                "both names, and a variable gh never reads",
+                &[
+                    ("GITHUB_TOKEN", "github-value"),
+                    ("GH_TOKEN", "gh-value"),
+                    ("GITHUB_API_TOKEN", "api-value"),
+                ][..],
+                vec![
+                    pair("GH_TOKEN", "gh-value"),
+                    pair("GITHUB_TOKEN", "github-value"),
+                ],
+            ),
+        ] {
+            let runner = TokenRunner {
+                held,
+                handed: RefCell::new(Vec::new()),
+            };
+            Release::new(&runner, "v0.4.2".to_string())
+                .stage(Path::new("Z:/staging"))
+                .expect("the download starts");
+            assert_eq!(*runner.handed.borrow(), vec![wanted], "{what}");
+        }
+    }
+
     // ///// The command end to end /////
 
     /// A `Runner` that writes the artifact a build would have written, so the
@@ -2096,7 +2200,12 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
     }
 
     impl Runner for BuildingRunner {
-        fn capture(&self, _command: &[&str]) -> Option<String> {
+        fn capture_within(
+            &self,
+            _command: &[&str],
+            _env: &[(&str, &str)],
+            _deadline: std::time::Duration,
+        ) -> Option<String> {
             None
         }
 
