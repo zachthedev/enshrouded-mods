@@ -62,7 +62,7 @@ From a fresh clone to a green gate:
 git clone --recurse-submodules https://github.com/zachthedev/enshrouded-mods.git
 cd enshrouded-mods
 mise install                  # the gate's tools, at the releases mise.lock records
-bun install                   # the hooks and the markup formatter
+bun install --frozen-lockfile # the hooks and the markup formatter
 cargo xtask server fetch      # a dedicated server, into .cache
 cargo xtask schema extract    # the reflection schema, out of that server
 cargo xtask check             # the gate
