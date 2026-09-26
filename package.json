@@ -1,5 +1,5 @@
 {
-  "name": "enshrouded-mods-tooling",
+  "name": "enshrouded-mods",
   "private": true,
   "type": "module",
   "description": "Commit message linting and markup formatting for the mods repository. The project itself is Rust.",

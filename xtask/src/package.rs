@@ -1183,7 +1183,7 @@ mod tests {
         Mod {
             package: "private-chests".to_string(),
             library: "private_chests.dll".to_string(),
-            version: "0.1.0".to_string(),
+            version: "3.2.1".to_string(),
         }
     }
 
@@ -1238,6 +1238,28 @@ mod tests {
         root
     }
 
+    /// The release tag for private-chests at the version the copied workspace
+    /// declares. xtask shares the workspace version, so a version bump moves
+    /// the tag with it.
+    fn release_tag() -> String {
+        format!("private-chests-v{}", env!("CARGO_PKG_VERSION"))
+    }
+
+    /// The ember-sdk version the lockfile under `root` resolves, read apart
+    /// from the command's own lockfile reader.
+    fn locked_sdk(root: &Path) -> String {
+        let text = fs::read_to_string(root.join("Cargo.lock")).expect("the lockfile reads");
+        let lock: toml::Value = toml::from_str(&text).expect("the lockfile parses");
+        lock.get("package")
+            .and_then(toml::Value::as_array)
+            .expect("a package list")
+            .iter()
+            .find(|package| package.get("name").and_then(toml::Value::as_str) == Some(EMBER_SDK))
+            .and_then(|package| package.get("version").and_then(toml::Value::as_str))
+            .expect("the lockfile resolves ember-sdk")
+            .to_string()
+    }
+
     /// Every entry of the archive at `path`, in the order it holds them.
     fn entries(path: &Path) -> Vec<String> {
         let file = fs::File::open(path).expect("the archive opens");
@@ -1271,7 +1293,7 @@ mod tests {
     fn fixture_bundle(out: &Path, library: &Path) -> Bundle {
         bundle(
             &subject(),
-            "private-chests-v0.1.0",
+            "private-chests-v3.2.1",
             library,
             LOADER_BYTES,
             out,
@@ -1332,11 +1354,11 @@ mod tests {
         held.sort();
         assert_eq!(
             held,
-            vec![SUMS.to_string(), "private-chests-v0.1.0.zip".to_string()]
+            vec![SUMS.to_string(), "private-chests-v3.2.1.zip".to_string()]
         );
 
         let sums = fs::read_to_string(&written.sums).expect("the digest file reads");
-        let recorded = recorded_digest(&sums, "private-chests-v0.1.0.zip")
+        let recorded = recorded_digest(&sums, "private-chests-v3.2.1.zip")
             .expect("the digest file reads")
             .expect("the digest file names the archive");
         let found = digest(&fs::read(&written.archive).expect("the archive reads"));
@@ -1379,7 +1401,7 @@ mod tests {
 
         let err = bundle(
             &subject(),
-            "private-chests-v0.1.0",
+            "private-chests-v3.2.1",
             &library,
             LOADER_BYTES,
             &out,
@@ -1389,7 +1411,7 @@ mod tests {
         let said = format!("{err:#}");
         assert!(said.contains("private-chests-v0.0.9.zip"), "got {said}");
         assert!(
-            !out.join("private-chests-v0.1.0.zip").exists(),
+            !out.join("private-chests-v3.2.1.zip").exists(),
             "it wrote the archive anyway"
         );
     }
@@ -1433,12 +1455,12 @@ mod tests {
             let subject = Mod {
                 package: package.to_string(),
                 library: library.to_string(),
-                version: "0.1.0".to_string(),
+                version: "3.2.1".to_string(),
             };
 
             let err = bundle(
                 &subject,
-                "private-chests-v0.1.0",
+                "private-chests-v3.2.1",
                 &built,
                 LOADER_BYTES,
                 &out,
@@ -1451,7 +1473,7 @@ mod tests {
                 "{label}: the refusal is not about the entry: {said}"
             );
             assert!(
-                !out.join("private-chests-v0.1.0.zip").exists(),
+                !out.join("private-chests-v3.2.1.zip").exists(),
                 "{label}: it wrote the archive anyway"
             );
         }
@@ -1479,7 +1501,7 @@ mod tests {
     #[test]
     fn a_tag_reads_as_a_package_and_a_version() {
         let cases: Vec<(&str, Option<(&str, &str)>)> = vec![
-            ("private-chests-v0.1.0", Some(("private-chests", "0.1.0"))),
+            ("private-chests-v3.2.1", Some(("private-chests", "3.2.1"))),
             ("mod-v1.2.3", Some(("mod", "1.2.3"))),
             // The last split wins, so a package name carrying its own `-v` is
             // read whole.
@@ -1488,32 +1510,32 @@ mod tests {
                 "private-chests-v1.0.0-rc.1",
                 Some(("private-chests", "1.0.0-rc.1")),
             ),
-            ("v0.1.0", None),
+            ("v3.2.1", None),
             ("private-chests", None),
             ("private-chests-v", None),
             ("private-chests-v1.0", None),
-            ("private-chests-0.1.0", None),
-            ("-v0.1.0", None),
+            ("private-chests-3.2.1", None),
+            ("-v3.2.1", None),
             ("", None),
             // A pre-release is semver's own character class. The tag becomes
             // the archive's file name, so anything that reads as a path there
             // is refused here.
             (
-                "private-chests-v0.1.0-rc-1",
-                Some(("private-chests", "0.1.0-rc-1")),
+                "private-chests-v3.2.1-rc-1",
+                Some(("private-chests", "3.2.1-rc-1")),
             ),
             (
-                "private-chests-v0.1.0-alpha.2.3",
-                Some(("private-chests", "0.1.0-alpha.2.3")),
+                "private-chests-v3.2.1-alpha.2.3",
+                Some(("private-chests", "3.2.1-alpha.2.3")),
             ),
-            ("private-chests-v0.1.0-../../../../escape", None),
-            ("private-chests-v0.1.0-/etc/passwd", None),
-            (r"private-chests-v0.1.0-C:\Windows\evil", None),
-            ("private-chests-v0.1.0-x/../../escaped", None),
-            ("private-chests-v0.1.0-", None),
-            ("private-chests-v0.1.0-rc..1", None),
-            ("private-chests-v0.1.0-rc 1", None),
-            ("private-chests-v0.1.0+build.7", None),
+            ("private-chests-v3.2.1-../../../../escape", None),
+            ("private-chests-v3.2.1-/etc/passwd", None),
+            (r"private-chests-v3.2.1-C:\Windows\evil", None),
+            ("private-chests-v3.2.1-x/../../escaped", None),
+            ("private-chests-v3.2.1-", None),
+            ("private-chests-v3.2.1-rc..1", None),
+            ("private-chests-v3.2.1-rc 1", None),
+            ("private-chests-v3.2.1+build.7", None),
         ];
 
         for (tag, expected) in cases {
@@ -1648,8 +1670,8 @@ mod tests {
             (
                 "an inherited version",
                 "[package]\nname = \"private-chests\"\nversion.workspace = true\n",
-                Some("0.1.0"),
-                Some(("private-chests", "private_chests.dll", "0.1.0")),
+                Some("3.2.1"),
+                Some(("private-chests", "private_chests.dll", "3.2.1")),
             ),
             (
                 "a declared version",
@@ -1667,13 +1689,13 @@ mod tests {
             (
                 "no package table",
                 "[lib]\nname = \"chests\"\n",
-                Some("0.1.0"),
+                Some("3.2.1"),
                 None,
             ),
             (
                 "no name",
                 "[package]\nversion = \"1.0.0\"\n",
-                Some("0.1.0"),
+                Some("3.2.1"),
                 None,
             ),
             (
@@ -1685,7 +1707,7 @@ mod tests {
             (
                 "no version at all",
                 "[package]\nname = \"private-chests\"\n",
-                Some("0.1.0"),
+                Some("3.2.1"),
                 None,
             ),
         ];
@@ -1761,7 +1783,7 @@ mod tests {
         let lockfile = "\
 [[package]]
 name = \"anyhow\"
-version = \"1.0.104\"
+version = \"1.0.1\"
 source = \"registry+https://github.com/rust-lang/crates.io-index\"
 
 [[package]]
@@ -1779,7 +1801,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         );
         assert_eq!(ember_tag("0.4.2"), "v0.4.2");
 
-        let absent = "[[package]]\nname = \"anyhow\"\nversion = \"1.0.104\"\n";
+        let absent = "[[package]]\nname = \"anyhow\"\nversion = \"1.0.1\"\n";
         assert!(
             ember_locked(absent).is_err(),
             "a lockfile without the sdk named a release anyway"
@@ -1837,7 +1859,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         let other = "sparse+https://registry.example/index/";
 
         let published = lockfile(&[
-            ("anyhow", "1.0.104", crates_io, &[]),
+            ("anyhow", "1.0.1", crates_io, &[]),
             ("ember-enshrouded", "0.4.2", crates_io, &["ember-platform"]),
             ("ember-platform", "0.4.2", crates_io, &[]),
             (
@@ -1857,27 +1879,27 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         let refused: [(&str, String, &str, &str); 5] = [
             (
                 "the sdk from a directory",
-                lockfile(&[("ember-sdk", "0.1.0", None, &[])]),
-                "ember-sdk 0.1.0",
+                lockfile(&[("ember-sdk", "3.2.1", None, &[])]),
+                "ember-sdk 3.2.1",
                 "a directory",
             ),
             (
                 "the sdk from git",
-                lockfile(&[("ember-sdk", "0.1.0", Some(git), &[])]),
-                "ember-sdk 0.1.0",
+                lockfile(&[("ember-sdk", "3.2.1", Some(git), &[])]),
+                "ember-sdk 3.2.1",
                 git,
             ),
             (
                 "the sdk from another registry",
-                lockfile(&[("ember-sdk", "0.1.0", Some(other), &[])]),
-                "ember-sdk 0.1.0",
+                lockfile(&[("ember-sdk", "3.2.1", Some(other), &[])]),
+                "ember-sdk 3.2.1",
                 other,
             ),
             (
                 "a sibling from a directory",
                 lockfile(&[
                     ("ember-platform", "0.1.1", None, &[]),
-                    ("ember-sdk", "0.1.0", crates_io, &["ember-platform"]),
+                    ("ember-sdk", "3.2.1", crates_io, &["ember-platform"]),
                 ]),
                 "ember-platform 0.1.1",
                 "a directory",
@@ -1885,9 +1907,9 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
             (
                 "a sibling reached through another",
                 lockfile(&[
-                    ("ember-enshrouded", "0.1.0", crates_io, &["ember-platform"]),
+                    ("ember-enshrouded", "3.2.1", crates_io, &["ember-platform"]),
                     ("ember-platform", "0.1.1", Some(git), &[]),
-                    ("ember-sdk", "0.1.0", crates_io, &["ember-enshrouded"]),
+                    ("ember-sdk", "3.2.1", crates_io, &["ember-enshrouded"]),
                 ]),
                 "ember-platform 0.1.1",
                 git,
@@ -2372,7 +2394,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         };
         let request = Request {
             subject: "private-chests".to_string(),
-            tag: "private-chests-v0.1.0".to_string(),
+            tag: release_tag(),
             out: out.clone(),
             loader: LoaderFrom::Local(loader),
         };
@@ -2391,7 +2413,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         assert_eq!(entry_bytes(&written.archive, LOADER), LOADER_BYTES);
         assert_eq!(
             written.archive,
-            out.join("private-chests-v0.1.0.zip"),
+            out.join(format!("{}.zip", release_tag())),
             "the archive is not named for the tag"
         );
         let ran = runner.ran.borrow().clone();
@@ -2415,7 +2437,10 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         let root = workspace(home.path());
         let fetched = home.path().join("ember");
         stage_loader(&fetched, LOADER_BYTES, None);
-        put(&fetched.join(TAG_FILE), b"v0.1.0\n");
+        put(
+            &fetched.join(TAG_FILE),
+            format!("v{}\n", locked_sdk(&root)).as_bytes(),
+        );
         let out = home.path().join("out");
         let runner = BuildingRunner {
             artifact: artifact(&root.join("target"), "private_chests.dll"),
@@ -2424,7 +2449,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         };
         let request = Request {
             subject: "private-chests".to_string(),
-            tag: "private-chests-v0.1.0".to_string(),
+            tag: release_tag(),
             out,
             loader: LoaderFrom::Fetched {
                 dir: fetched,
@@ -2445,9 +2470,10 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         );
         let said = String::from_utf8(printed).expect("utf-8 output");
         assert!(
-            said.contains(
-                "from the zachthedev/enshrouded-ember release v0.1.0, downloaded by an earlier job"
-            ),
+            said.contains(&format!(
+                "from the zachthedev/enshrouded-ember release v{}, downloaded by an earlier job",
+                locked_sdk(&root)
+            )),
             "the run does not say where the loader came from: {said}"
         );
     }
@@ -2461,7 +2487,10 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         let root = workspace(home.path());
         let fetched = home.path().join("ember");
         stage_loader(&fetched, b"a replaced loader", None);
-        put(&fetched.join(TAG_FILE), b"v0.1.0\n");
+        put(
+            &fetched.join(TAG_FILE),
+            format!("v{}\n", locked_sdk(&root)).as_bytes(),
+        );
         let runner = BuildingRunner {
             artifact: artifact(&root.join("target"), "private_chests.dll"),
             bytes: Some(LIBRARY_BYTES.to_vec()),
@@ -2469,7 +2498,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         };
         let request = Request {
             subject: "private-chests".to_string(),
-            tag: "private-chests-v0.1.0".to_string(),
+            tag: release_tag(),
             out: home.path().join("out"),
             loader: LoaderFrom::Fetched {
                 dir: fetched,
@@ -2585,7 +2614,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         };
         let request = Request {
             subject: "private-chests".to_string(),
-            tag: "private-chests-v0.1.0".to_string(),
+            tag: release_tag(),
             out,
             loader: LoaderFrom::Local(loader),
         };
@@ -2611,15 +2640,15 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
     ///
     /// The lockfile is written into the sandbox rather than taken from the copy
     /// `workspace` lays down: the case has to present a directory whatever this
-    /// repository's own lockfile records. The version is one Ember released, so
-    /// the missing source is the only thing left to refuse.
+    /// repository's own lockfile records. The version is well formed, so the
+    /// missing source is the only thing left to refuse.
     #[test]
     fn the_download_route_refuses_an_sdk_from_a_directory() {
         let home = sandbox("directory");
         let root = workspace(home.path());
         put(
             &root.join("Cargo.lock"),
-            format!("[[package]]\nname = \"{EMBER_SDK}\"\nversion = \"0.1.0\"\n").as_bytes(),
+            format!("[[package]]\nname = \"{EMBER_SDK}\"\nversion = \"3.2.1\"\n").as_bytes(),
         );
         let runner = BuildingRunner {
             artifact: artifact(&root.join("target"), "private_chests.dll"),
@@ -2628,7 +2657,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         };
         let request = Request {
             subject: "private-chests".to_string(),
-            tag: "private-chests-v0.1.0".to_string(),
+            tag: release_tag(),
             out: home.path().join("out"),
             loader: LoaderFrom::Release,
         };
@@ -2658,19 +2687,19 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
             (
                 "a mod this workspace does not hold",
                 "not-a-mod",
-                "not-a-mod-v0.1.0",
+                "not-a-mod-v3.2.1",
                 "holds no mod named not-a-mod",
             ),
             (
                 "a tag that is not a release tag",
                 "private-chests",
-                "private-chests-0.1.0",
+                "private-chests-3.2.1",
                 "<package>-v<version>",
             ),
             (
                 "a tag naming another package",
                 "private-chests",
-                "other-mod-v0.1.0",
+                "other-mod-v3.2.1",
                 "and the bundle is for private-chests",
             ),
             (

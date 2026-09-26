@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "enshrouded-mods-tooling",
+      "name": "enshrouded-mods",
       "devDependencies": {
         "@commitlint/cli": "21.2.2",
         "@commitlint/config-conventional": "21.2.2",
