@@ -12,7 +12,7 @@ person.
 2. [CONTRIBUTING.md](CONTRIBUTING.md)
 3. [SECURITY.md](SECURITY.md)
 4. [docs/install.md](docs/install.md)
-5. [docs/mods.md](docs/mods.md), and the documents it links for the mod you
+5. [docs/usage.md](docs/usage.md), and the documents it links for the mod you
    change
 
 ## Verify

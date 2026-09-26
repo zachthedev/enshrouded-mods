@@ -8,9 +8,13 @@ Nothing here is affiliated with or endorsed by Keen Games.
 This repository is in development. No release is published yet. Versions are
 `0.x`, which promises no compatibility between releases.
 
+Each mod ships as one archive on its GitHub release, and
+[docs/install.md](docs/install.md) puts it on a server. `cargo xtask check` is
+the gate a change passes, as [CONTRIBUTING.md](CONTRIBUTING.md#the-gate) says.
+
 ## private-chests
 
-The first mod. [docs/mods.md](docs/mods.md#private-chests) says what it
+The first mod. [docs/usage.md](docs/usage.md#private-chests) says what it
 changes.
 
 ### What a player sees
@@ -37,16 +41,16 @@ changes.
   The mod never writes that file.
 
 Everything a player sees arrives as a chat line, because chat is the only text
-channel a dedicated server can drive. Dedicated servers ship with text chat off,
-so `enableTextChat` has to be true in `enshrouded_server.json` for any of it to
-reach a player. With it off the mod still enforces scope; it just says nothing.
+channel a dedicated server can drive.
+[Turning on chat](docs/install.md#turning-on-chat) says what the server needs
+for any of it to reach a player.
 
 ## Documentation
 
 | File                                                             | For                                                                 |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------- |
 | [docs/install.md](docs/install.md)                               | Installing a mod on a server, checking the download, upgrading      |
-| [docs/mods.md](docs/mods.md)                                     | What each mod does, and where its own documents are                 |
+| [docs/usage.md](docs/usage.md)                                   | What each mod does, and where its own documents are                 |
 | [Running private-chests](mods/private-chests/docs/admin.md)      | The mod's settings and the chat verbs                               |
 | [Draw and deposit paths](mods/private-chests/docs/draw-paths.md) | How the game itself moves items into and out of containers          |
 | [fixtures/README.md](fixtures/README.md)                         | The worlds and configurations the dev server is seeded with         |
