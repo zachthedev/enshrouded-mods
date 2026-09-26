@@ -5,8 +5,8 @@ Server-side mods for Enshrouded dedicated servers, built on
 
 Nothing here is affiliated with or endorsed by Keen Games.
 
-This repository is in development. No release is published yet. Versions are
-`0.x`, which promises no compatibility between releases.
+This repository is in development. Each release is published on the
+[releases page](https://github.com/zachthedev/enshrouded-mods/releases).
 
 Each mod ships as one archive on its GitHub release, and
 [docs/install.md](docs/install.md) puts it on a server. `cargo xtask check` is
