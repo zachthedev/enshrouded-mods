@@ -523,6 +523,19 @@ pub fn ember_release(lockfile: &str) -> anyhow::Result<String> {
     Ok(ember_tag(&family[0].version))
 }
 
+/// [`ember_release`] for the lockfile of the workspace at `root`.
+///
+/// # Errors
+///
+/// Returns an error when the lockfile cannot be read, or as [`ember_release`]
+/// does.
+fn lockfile_release(root: &Path) -> anyhow::Result<String> {
+    let lockfile = root.join("Cargo.lock");
+    let text =
+        fs::read_to_string(&lockfile).with_context(|| format!("reading {}", lockfile.display()))?;
+    ember_release(&text)
+}
+
 // ///////////////////////////////////////////////
 // Where the loader comes from
 // ///////////////////////////////////////////////
@@ -534,6 +547,9 @@ pub struct Staged {
     pub loader: PathBuf,
     /// The digest file that records the loader's digest.
     pub sums: PathBuf,
+    /// A digest the loader must also match, handed over apart from the files,
+    /// or `None`.
+    pub pinned: Option<String>,
 }
 
 /// Where a bundle's loader comes from.
@@ -626,6 +642,7 @@ impl Source for Release<'_> {
         Ok(Staged {
             loader: into.join(LOADER),
             sums: into.join(SUMS),
+            pinned: None,
         })
     }
 
@@ -675,6 +692,7 @@ impl Source for Local {
         Ok(Staged {
             loader: self.loader.clone(),
             sums,
+            pinned: None,
         })
     }
 
@@ -682,6 +700,64 @@ impl Source for Local {
         format!(
             "{LOADER} from {}, which its own {SUMS} agrees with rather than a release",
             self.loader.display()
+        )
+    }
+}
+
+/// The file an earlier job writes beside the assets it downloaded, naming the
+/// Ember release they came from.
+pub const TAG_FILE: &str = "TAG";
+
+/// The loader and its digest file as an earlier job downloaded them from an
+/// Ember release, with [`TAG_FILE`] naming that release.
+///
+/// This is what `--ember-release` selects. The release workflow downloads in a
+/// job of its own, so the token the download needs never sits beside a build.
+/// The tag file must name the release this lockfile resolves, so the job and
+/// this command cannot disagree on which release the loader belongs to.
+///
+/// The files cross between the jobs as a run artifact, which another job in
+/// the same run can replace, tag file and digest file included. So the job that
+/// downloads also records the loader's digest as a job output, which no other
+/// job can write, and the loader must match it as well as its digest file.
+pub struct Fetched {
+    dir: PathBuf,
+    tag: String,
+    digest: String,
+}
+
+impl Fetched {
+    /// Build a source over the directory `dir`, which must hold the assets of
+    /// the release `tag`, with a loader whose SHA-256 is `digest`.
+    #[must_use]
+    pub fn new(dir: PathBuf, tag: String, digest: String) -> Self {
+        Self { dir, tag, digest }
+    }
+}
+
+impl Source for Fetched {
+    fn stage(&self, _into: &Path) -> anyhow::Result<Staged> {
+        let marker = self.dir.join(TAG_FILE);
+        let named =
+            fs::read_to_string(&marker).with_context(|| format!("reading {}", marker.display()))?;
+        let named = named.trim();
+        ensure!(
+            named == self.tag,
+            "{} names the {EMBER} release {named:?}, and this lockfile resolves {}",
+            marker.display(),
+            self.tag
+        );
+        Ok(Staged {
+            loader: self.dir.join(LOADER),
+            sums: self.dir.join(SUMS),
+            pinned: Some(self.digest.to_ascii_lowercase()),
+        })
+    }
+
+    fn origin(&self) -> String {
+        format!(
+            "{LOADER} from the {EMBER} release {}, downloaded by an earlier job",
+            self.tag
         )
     }
 }
@@ -711,6 +787,13 @@ fn verified(staged: &Staged) -> anyhow::Result<Vec<u8>> {
         staged.loader.display(),
         staged.sums.display()
     );
+    if let Some(pinned) = &staged.pinned {
+        ensure!(
+            found == *pinned,
+            "{} hashes to {found} and the job that fetched it recorded {pinned}",
+            staged.loader.display()
+        );
+    }
     Ok(bytes)
 }
 
@@ -948,6 +1031,37 @@ pub fn bundle(
 // The command
 // ///////////////////////////////////////////////
 
+/// Where `cargo xtask package` takes Ember's loader from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoaderFrom {
+    /// The Ember release the lockfile resolves, downloaded through gh.
+    Release,
+    /// A loader already on disk, with its digest file beside it.
+    Local(PathBuf),
+    /// A directory an earlier job filled from the Ember release the lockfile
+    /// resolves, with a [`TAG_FILE`] naming that release.
+    Fetched {
+        /// The directory the job's artifact landed in.
+        dir: PathBuf,
+        /// The loader's SHA-256, as the job that downloaded it recorded it.
+        digest: String,
+    },
+}
+
+impl LoaderFrom {
+    /// The route the `--ember-loader` value or the `--ember-release` pair
+    /// names, and the download when neither is given. The command line refuses
+    /// both at once, and half of the pair.
+    #[must_use]
+    pub fn from_flags(local: Option<PathBuf>, fetched: Option<(PathBuf, String)>) -> Self {
+        match (local, fetched) {
+            (Some(path), _) => Self::Local(path),
+            (None, Some((dir, digest))) => Self::Fetched { dir, digest },
+            (None, None) => Self::Release,
+        }
+    }
+}
+
 /// What `cargo xtask package` was asked for.
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -957,9 +1071,8 @@ pub struct Request {
     pub tag: String,
     /// The directory the archive and its digest file are written into.
     pub out: PathBuf,
-    /// A loader already on disk, with its digest file beside it, in place of
-    /// the download.
-    pub loader: Option<PathBuf>,
+    /// Where Ember's loader comes from.
+    pub loader: LoaderFrom,
 }
 
 /// Build the bundle `request` describes.
@@ -1012,13 +1125,14 @@ pub fn run(
 
     refuse_occupied(&request.out)?;
 
-    let source: Box<dyn Source> = if let Some(path) = &request.loader {
-        Box::new(Local::new(path.clone()))
-    } else {
-        let lockfile = root.join("Cargo.lock");
-        let text = fs::read_to_string(&lockfile)
-            .with_context(|| format!("reading {}", lockfile.display()))?;
-        Box::new(Release::new(runner, ember_release(&text)?))
+    let source: Box<dyn Source> = match &request.loader {
+        LoaderFrom::Local(path) => Box::new(Local::new(path.clone())),
+        LoaderFrom::Release => Box::new(Release::new(runner, lockfile_release(root)?)),
+        LoaderFrom::Fetched { dir, digest } => Box::new(Fetched::new(
+            dir.clone(),
+            lockfile_release(root)?,
+            digest.clone(),
+        )),
     };
 
     let staging = tempfile::TempDir::with_prefix("xtask-package-")
@@ -1050,10 +1164,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        Bundle, EMBER, EMBER_SDK, LOADER, Local, Locked, MODS, MODS_DIRECTORY, Mod, Release,
-        Request, SUMS, Source, TARGET, Tag, artifact, build_command, bundle, digest, ember_family,
-        ember_locked, ember_release, ember_tag, is_release, mods, read_mod, recorded_digest,
-        refuse_escaping, run, sums_line, verified,
+        Bundle, EMBER, EMBER_SDK, Fetched, LOADER, LoaderFrom, Local, Locked, MODS, MODS_DIRECTORY,
+        Mod, Release, Request, SUMS, Source, Staged, TAG_FILE, TARGET, Tag, artifact,
+        build_command, bundle, digest, ember_family, ember_locked, ember_release, ember_tag,
+        is_release, mods, read_mod, recorded_digest, refuse_escaping, run, sums_line, verified,
     };
     use crate::runner::{Captured, Exit, Runner};
 
@@ -2260,7 +2374,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
             subject: "private-chests".to_string(),
             tag: "private-chests-v0.1.0".to_string(),
             out: out.clone(),
-            loader: Some(loader),
+            loader: LoaderFrom::Local(loader),
         };
 
         let mut printed = Vec::new();
@@ -2292,6 +2406,166 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
         );
     }
 
+    /// A loader an earlier job fetched is held to its digest and bundled, the
+    /// build is the one command that runs, and the run says which release the
+    /// loader came from.
+    #[test]
+    fn the_command_builds_one_archive_from_a_fetched_release() {
+        let home = sandbox("fetched");
+        let root = workspace(home.path());
+        let fetched = home.path().join("ember");
+        stage_loader(&fetched, LOADER_BYTES, None);
+        put(&fetched.join(TAG_FILE), b"v0.1.0\n");
+        let out = home.path().join("out");
+        let runner = BuildingRunner {
+            artifact: artifact(&root.join("target"), "private_chests.dll"),
+            bytes: Some(LIBRARY_BYTES.to_vec()),
+            ran: RefCell::new(Vec::new()),
+        };
+        let request = Request {
+            subject: "private-chests".to_string(),
+            tag: "private-chests-v0.1.0".to_string(),
+            out,
+            loader: LoaderFrom::Fetched {
+                dir: fetched,
+                digest: digest(LOADER_BYTES).to_ascii_uppercase(),
+            },
+        };
+
+        let mut printed = Vec::new();
+        let written =
+            run(&runner, &root, &request, &mut printed).expect("the command builds a bundle");
+
+        assert_eq!(entry_bytes(&written.archive, LOADER), LOADER_BYTES);
+        let ran = runner.ran.borrow().clone();
+        assert_eq!(ran.len(), 1, "it ran more than the build: {ran:?}");
+        assert!(
+            !ran.iter().any(|line| line.starts_with("gh ")),
+            "it downloaded a loader an earlier job fetched: {ran:?}"
+        );
+        let said = String::from_utf8(printed).expect("utf-8 output");
+        assert!(
+            said.contains(
+                "from the zachthedev/enshrouded-ember release v0.1.0, downloaded by an earlier job"
+            ),
+            "the run does not say where the loader came from: {said}"
+        );
+    }
+
+    /// A loader replaced after the job that fetched it recorded its digest is
+    /// refused before the build runs, however well its tag file and digest file
+    /// agree with it.
+    #[test]
+    fn a_fetched_loader_must_match_the_digest_its_job_recorded() {
+        let home = sandbox("fetched-replaced");
+        let root = workspace(home.path());
+        let fetched = home.path().join("ember");
+        stage_loader(&fetched, b"a replaced loader", None);
+        put(&fetched.join(TAG_FILE), b"v0.1.0\n");
+        let runner = BuildingRunner {
+            artifact: artifact(&root.join("target"), "private_chests.dll"),
+            bytes: Some(LIBRARY_BYTES.to_vec()),
+            ran: RefCell::new(Vec::new()),
+        };
+        let request = Request {
+            subject: "private-chests".to_string(),
+            tag: "private-chests-v0.1.0".to_string(),
+            out: home.path().join("out"),
+            loader: LoaderFrom::Fetched {
+                dir: fetched,
+                digest: digest(LOADER_BYTES),
+            },
+        };
+
+        let mut printed = Vec::new();
+        let err =
+            run(&runner, &root, &request, &mut printed).expect_err("a replaced loader is refused");
+
+        let said = format!("{err:#}");
+        assert!(
+            said.contains(&format!(
+                "hashes to {} and the job that fetched it recorded {}",
+                digest(b"a replaced loader"),
+                digest(LOADER_BYTES)
+            )),
+            "got {said}"
+        );
+        assert!(
+            runner.ran.borrow().is_empty(),
+            "it built before refusing: {:?}",
+            runner.ran.borrow()
+        );
+    }
+
+    /// Each flag selects its own route, and neither selects the download.
+    #[test]
+    fn the_flags_select_the_loader_route() {
+        let path = || PathBuf::from("Z:/ember/POWRPROF.dll");
+        let dir = || PathBuf::from("Z:/fetched");
+        for (what, local, fetched, wanted) in [
+            ("neither", None, None, LoaderFrom::Release),
+            (
+                "--ember-loader",
+                Some(path()),
+                None,
+                LoaderFrom::Local(path()),
+            ),
+            (
+                "--ember-release",
+                None,
+                Some((dir(), "ab12".to_string())),
+                LoaderFrom::Fetched {
+                    dir: dir(),
+                    digest: "ab12".to_string(),
+                },
+            ),
+        ] {
+            assert_eq!(LoaderFrom::from_flags(local, fetched), wanted, "{what}");
+        }
+    }
+
+    /// A fetched release is taken only when its tag file names the release the
+    /// lockfile resolves, and a missing tag file is refused rather than read as
+    /// a match.
+    #[test]
+    fn a_fetched_release_is_held_to_the_lockfile_s_release() {
+        for (what, tag_file, refusal) in [
+            ("the lockfile's release", Some("v0.4.2\n"), None),
+            (
+                "another release",
+                Some("v0.4.1\n"),
+                Some(
+                    "names the zachthedev/enshrouded-ember release \"v0.4.1\", and this lockfile resolves v0.4.2",
+                ),
+            ),
+            ("no tag file", None, Some("TAG: ")),
+        ] {
+            let home = sandbox("fetched-tag");
+            let dir = home.path().join("ember");
+            fs::create_dir_all(&dir).expect("a directory");
+            if let Some(text) = tag_file {
+                put(&dir.join(TAG_FILE), text.as_bytes());
+            }
+            let staged = Fetched::new(dir.clone(), "v0.4.2".to_string(), "AB12".to_string())
+                .stage(home.path());
+            match refusal {
+                None => assert_eq!(
+                    staged.expect(what),
+                    Staged {
+                        loader: dir.join("POWRPROF.dll"),
+                        sums: dir.join("SHA256SUMS"),
+                        pinned: Some("ab12".to_string()),
+                    },
+                    "{what}"
+                ),
+                Some(sentence) => {
+                    let said = format!("{:#}", staged.expect_err(what));
+                    assert!(said.contains(sentence), "{what}: {said}");
+                }
+            }
+        }
+    }
+
     /// An occupied output directory is refused before the build runs.
     ///
     /// The refusal reads only the directory, so paying for a release
@@ -2313,7 +2587,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
             subject: "private-chests".to_string(),
             tag: "private-chests-v0.1.0".to_string(),
             out,
-            loader: Some(loader),
+            loader: LoaderFrom::Local(loader),
         };
 
         let mut printed = Vec::new();
@@ -2356,7 +2630,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
             subject: "private-chests".to_string(),
             tag: "private-chests-v0.1.0".to_string(),
             out: home.path().join("out"),
-            loader: None,
+            loader: LoaderFrom::Release,
         };
 
         let mut printed = Vec::new();
@@ -2421,7 +2695,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
                 subject: requested.to_string(),
                 tag: tag.to_string(),
                 out: out.clone(),
-                loader: Some(loader),
+                loader: LoaderFrom::Local(loader),
             };
 
             let mut printed = Vec::new();

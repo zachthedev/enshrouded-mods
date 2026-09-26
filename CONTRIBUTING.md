@@ -515,9 +515,13 @@ published to a registry: a mod ships as one archive on its GitHub release.
 2. Merging that pull request, as a squash, is the release. The next run waits
    for the `release` environment's reviewer, then tags each mod the pull
    request names `<mod>-v<version>` and drafts its GitHub release.
-3. `cargo xtask package` builds the mod's archive from that commit, with
-   Ember's loader downloaded from Ember's own release and held to its digest
-   file, and writes a `SHA256SUMS` beside it.
+3. The `loader` job downloads Ember's loader and its digest file from Ember's
+   own release through gh. It runs no repository code, so the token gh needs
+   never sits beside a build. It hands the files on as a run artifact and the
+   loader's digest as a job output, which no other job in the run can write.
+   `cargo xtask package --ember-release` then builds the mod's archive from
+   that commit, holds the loader to that digest, to its digest file and to the
+   release the lockfile resolves, and writes a `SHA256SUMS` beside it.
 4. The publish job attaches both files, records a build provenance
    attestation, waits for the same reviewer a second time, and flips the draft
    public. Two approvals per release is the cost of creating every release as
@@ -552,11 +556,12 @@ previous tag, which lists every change in the release, hidden types included.
 `git log --oneline <mod>-v<old>..<mod>-v<new>` lists the same, and each GitHub
 release carries GitHub's generated notes after its changelog.
 
-No mod is released until Ember's release carries the loader, because
-`cargo xtask package` downloads it from there. The command also refuses a
-lockfile in which any Ember crate comes from somewhere other than crates.io: a
-directory or a git checkout can carry a release's version number without its
-code.
+No mod is released until Ember's release carries the loader, because the
+release takes it from there. Run with no loader flag, `cargo xtask package`
+downloads it itself through gh's own login or a `GH_TOKEN`. The command also
+refuses a lockfile in which any Ember crate comes from somewhere other than
+crates.io: a directory or a git checkout can carry a release's version number
+without its code.
 
 A failed release is recovered by cutting the next version, never by moving a
 tag. Only the releaser app can create a tag.
