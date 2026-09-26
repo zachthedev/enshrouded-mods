@@ -54,12 +54,20 @@ before extracting:
 Get-FileHash private-chests-v<version>.zip -Algorithm SHA256
 ```
 
-The build that produced the archive is attested by GitHub, so the archive can
-also be held to the workflow run that made it and the commit it was built from.
-The shared publish workflow signs the attestation, so the command names it
-beside the repository. It resolves the commit the release tag names first,
-through `tags/` so that a branch with the same name cannot answer, and verifies
-nothing when no commit comes back. On Windows:
+The build that produced the archive is attested by GitHub, and two checks read
+that attestation. The shared publish workflow signs it, so each names that
+workflow beside the repository, and `--repo` alone fails.
+
+The first proves the repository the archive was built in and the workflow that
+signed it:
+
+```sh
+gh attestation verify private-chests-v<version>.zip --repo zachthedev/enshrouded-mods --signer-workflow zachthedev/.github/.github/workflows/publish.yml
+```
+
+The second also holds the archive to the commit the release tag names. It
+resolves that commit first, through `tags/` so that a branch with the same name
+cannot answer, and verifies nothing when no commit comes back. On Windows:
 
 ```powershell
 $sha = gh api repos/zachthedev/enshrouded-mods/commits/tags/private-chests-v<version> --jq .sha
@@ -86,9 +94,9 @@ else
 fi
 ```
 
-A pass proves the archive was built in this repository, signed by that
-workflow, from the commit the tag names. A tag moved since the release fails
-the check, because the attestation still names the commit it was built from.
+A pass of the second proves the archive was built in this repository, signed by
+that workflow, from the commit the tag names. A tag moved since the release
+fails it, because the attestation still names the commit it was built from.
 
 ## Upgrade
 
