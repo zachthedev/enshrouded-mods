@@ -65,7 +65,7 @@ body:
     attributes:
       label: Ember and mod versions
       description: The startup report names both.
-      placeholder: 'ember 0.1.0, private-chests 0.1.0'
+      placeholder: 'ember x.y.z, private-chests x.y.z'
     validations:
       required: true
   - type: textarea

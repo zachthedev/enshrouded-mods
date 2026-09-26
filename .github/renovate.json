@@ -6,6 +6,22 @@
   },
   "packageRules": [
     {
+      "description": "Crates only xtask uses, which the shipped mod bundle's normal and build graph never reaches, so a bump of one is a chore. A crate xtask declares that a mod also pulls in through ember-sdk stays a fix.",
+      "matchManagers": ["cargo"],
+      "matchDepNames": [
+        "anyhow",
+        "clap",
+        "owo-colors",
+        "regex-syntax",
+        "sha2",
+        "tempfile",
+        "which",
+        "windows-sys",
+        "zip"
+      ],
+      "semanticCommitType": "chore"
+    },
+    {
       "description": "ember-sdk is this author's own crate, so a new release is taken the day it is published rather than after the cooldown.",
       "matchDatasources": ["crate"],
       "matchDepNames": ["ember-sdk"],
