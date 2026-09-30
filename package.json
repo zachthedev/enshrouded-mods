@@ -14,5 +14,8 @@
     "lefthook": "2.1.14",
     "prettier": "3.9.9",
     "yaml": "2.9.1"
-  }
+  },
+  "trustedDependencies": [
+    "lefthook"
+  ]
 }
