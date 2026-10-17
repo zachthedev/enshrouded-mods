@@ -57,7 +57,7 @@ windows-sys = "0.61.2"
 # and every other method this crate can write needs a tool that understands it.
 # The bare `deflate` feature adds a second encoder that trades build time for a
 # smaller archive, which a bundle of two libraries has no use for.
-zip = { version = "8.6.0", default-features = false, features = [
+zip = { version = "9.0.0", default-features = false, features = [
     "deflate-flate2-zlib-rs",
 ] }
 
